@@ -76,6 +76,17 @@ group UUID, plus `notification_type: "JOIN_REQUEST_CREATED"` or
 `"JOIN_REQUEST_DECIDED"` and the routing fields `join_request_id`, `group_id`,
 and `status`.
 
+Event pushes use `source_id` set to the event UUID, in three kinds:
+
+| `notification_type`  | `session_type`     | Sent when |
+|-----------------------|--------------------|-----------|
+| `EVENT`               | `EVENT`            | The event is published |
+| `EVENT_REMINDER`      | `EVENT_REMINDER`   | Before each day the event runs (extra field: `reminder_type`, `T_MINUS_10` or `T_ZERO`) |
+| `EVENT_ANNOUNCEMENT`  | `EVENT`            | An organizer sends one by hand from the CMS (extra field: `announcement_id`) |
+
+All three are suppressed for an event whose organizer has switched
+notifications off, and for a user who has muted that individual event.
+
 ## Default content
 
 When no custom content is configured:

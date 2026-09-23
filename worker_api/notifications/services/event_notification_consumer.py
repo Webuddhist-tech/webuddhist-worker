@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from worker_api.config import get, get_bool, get_int
 from worker_api.notifications.event_sqs_client import (
+    EVENT_ANNOUNCEMENT_EVENT,
     EVENT_CREATED_EVENT,
     EVENT_REMINDER_EVENT,
     delete_event_notification_message,
@@ -17,18 +18,21 @@ from worker_api.notifications.event_sqs_client import (
     receive_event_notification_messages,
 )
 from worker_api.notifications.schemas import (
+    EventAnnouncementTargetsResponse,
     EventNotificationTargetsResponse,
     EventPushDeviceTarget,
     EventReminderTargetsResponse,
 )
 from worker_api.notifications.services.backend_client import (
     deactivate_push_device,
+    fetch_event_announcement_targets,
     fetch_event_notification_targets,
     fetch_event_reminder_targets,
 )
 from worker_api.notifications.services.push.config_loader import is_push_configured
 from worker_api.notifications.services.push.fcm_client import (
     PermanentPushTokenError,
+    send_event_announcement_push_notification,
     send_event_push_notification,
     send_event_reminder_push_notification,
 )
@@ -57,6 +61,7 @@ def _idempotency_key(
     push_device_id: UUID,
     reminder_type: Optional[str] = None,
     fire_at: Optional[str] = None,
+    announcement_id: Optional[str] = None,
 ) -> str:
     """A key per delivery, not per event.
 
@@ -69,6 +74,8 @@ def _idempotency_key(
     Messages predating fire_at keep the old key shape, so a deploy does not
     strand anything already queued."""
     prefix = get("EVENT_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX")
+    if announcement_id:
+        return f"{prefix}{event_id}:ANNOUNCEMENT:{announcement_id}:{push_device_id}"
     if reminder_type:
         if fire_at:
             return f"{prefix}{event_id}:{reminder_type}:{fire_at}:{push_device_id}"
@@ -82,6 +89,7 @@ def _already_sent(
     push_device_id: UUID,
     reminder_type: Optional[str] = None,
     fire_at: Optional[str] = None,
+    announcement_id: Optional[str] = None,
 ) -> bool:
     client = _get_redis_client()
     return bool(
@@ -91,6 +99,7 @@ def _already_sent(
                 push_device_id=push_device_id,
                 reminder_type=reminder_type,
                 fire_at=fire_at,
+                announcement_id=announcement_id,
             )
         )
     )
@@ -102,6 +111,7 @@ def _mark_sent(
     push_device_id: UUID,
     reminder_type: Optional[str] = None,
     fire_at: Optional[str] = None,
+    announcement_id: Optional[str] = None,
 ) -> None:
     client = _get_redis_client()
     client.setex(
@@ -110,6 +120,7 @@ def _mark_sent(
             push_device_id=push_device_id,
             reminder_type=reminder_type,
             fire_at=fire_at,
+            announcement_id=announcement_id,
         ),
         get_int("EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS"),
         "1",
@@ -186,6 +197,100 @@ async def _fetch_all_reminder_targets(
 
     assert first_page is not None
     return first_page.model_copy(update={"recipients": all_recipients, "has_more": False})
+
+
+async def _fetch_all_announcement_targets(
+    event_id: UUID, audience: str
+) -> EventAnnouncementTargetsResponse:
+    page_size = max(get_int("EVENT_NOTIFICATION_TARGET_PAGE_SIZE"), 1)
+    skip = 0
+    first_page: EventAnnouncementTargetsResponse | None = None
+    all_recipients = []
+
+    while True:
+        try:
+            page = await fetch_event_announcement_targets(
+                event_id=event_id,
+                audience=audience,
+                skip=skip,
+                limit=page_size,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Event not found") from exc
+            raise TransientEventNotificationError(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise TransientEventNotificationError(str(exc)) from exc
+
+        if first_page is None:
+            first_page = page
+        all_recipients.extend(page.recipients)
+        if not page.has_more:
+            break
+        skip += page.limit
+
+    assert first_page is not None
+    return first_page.model_copy(update={"recipients": all_recipients, "has_more": False})
+
+
+async def _send_announcement_to_device(
+    *,
+    event_id: UUID,
+    announcement_id: str,
+    title: str,
+    body: str,
+    device: EventPushDeviceTarget,
+    semaphore: asyncio.Semaphore,
+) -> str:
+    """Return sent | skipped | permanent_failed | transient_failed."""
+    async with semaphore:
+        if not is_push_configured(device.platform):
+            return "skipped"
+
+        if _already_sent(
+            event_id=event_id,
+            push_device_id=device.id,
+            announcement_id=announcement_id,
+        ):
+            return "skipped"
+
+        try:
+            await send_event_announcement_push_notification(
+                device_token=device.token,
+                event_id=event_id,
+                announcement_id=announcement_id,
+                title=title,
+                body=body,
+            )
+            _mark_sent(
+                event_id=event_id,
+                push_device_id=device.id,
+                announcement_id=announcement_id,
+            )
+            return "sent"
+        except PermanentPushTokenError:
+            logger.warning(
+                "Deactivating permanently invalid push device %s for event announcement %s",
+                device.id,
+                event_id,
+            )
+            try:
+                await deactivate_push_device(push_device_id=device.id)
+            except Exception:
+                logger.exception("Failed to deactivate push device %s", device.id)
+            _mark_sent(
+                event_id=event_id,
+                push_device_id=device.id,
+                announcement_id=announcement_id,
+            )
+            return "permanent_failed"
+        except Exception:
+            logger.exception(
+                "Transient FCM failure for device %s on event announcement %s",
+                device.id,
+                event_id,
+            )
+            return "transient_failed"
 
 
 async def _send_to_device(
@@ -440,8 +545,94 @@ async def process_event_notification_message(message: Dict[str, Any]) -> None:
         await _process_event_reminder(event_id, reminder_type, fire_at, receipt_handle)
         return
 
+    if event_type == EVENT_ANNOUNCEMENT_EVENT:
+        await _process_event_announcement(
+            event_id,
+            body.get("announcement_id"),
+            body.get("audience"),
+            body.get("title"),
+            body.get("body"),
+            receipt_handle,
+        )
+        return
+
     assert event_type == EVENT_CREATED_EVENT
     await _process_event_created(event_id, receipt_handle)
+
+
+async def _process_event_announcement(
+    event_id: UUID,
+    announcement_id: str,
+    audience: str,
+    title: str,
+    body: str,
+    receipt_handle: Optional[str],
+) -> None:
+    try:
+        targets = await _fetch_all_announcement_targets(event_id, audience)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            logger.error("Event not found for announcement %s", event_id)
+            if receipt_handle:
+                delete_event_notification_message(receipt_handle)
+            return
+        raise TransientEventNotificationError(str(exc.detail)) from exc
+
+    devices = [
+        device
+        for recipient in targets.recipients
+        for device in recipient.push_devices
+    ]
+    if not devices:
+        # Also the shape of a suppressed announcement: the backend returns no
+        # recipients when the event's notifications switch went off after the
+        # organizer queued it.
+        logger.info(
+            "No push devices for announcement %s on event %s; deleting message",
+            announcement_id,
+            event_id,
+        )
+        if receipt_handle:
+            delete_event_notification_message(receipt_handle)
+        return
+
+    concurrency = max(get_int("EVENT_NOTIFICATION_SEND_CONCURRENCY"), 1)
+    semaphore = asyncio.Semaphore(concurrency)
+    results = await asyncio.gather(
+        *[
+            _send_announcement_to_device(
+                event_id=event_id,
+                announcement_id=announcement_id,
+                title=title,
+                body=body,
+                device=device,
+                semaphore=semaphore,
+            )
+            for device in devices
+        ]
+    )
+
+    sent = results.count("sent")
+    skipped = results.count("skipped")
+    permanent_failed = results.count("permanent_failed")
+    transient_failed = results.count("transient_failed")
+    logger.info(
+        "Announcement %s for event %s processed: sent=%s permanent_failed=%s "
+        "transient_failed=%s skipped=%s",
+        announcement_id,
+        event_id,
+        sent,
+        permanent_failed,
+        transient_failed,
+        skipped,
+    )
+
+    if transient_failed:
+        raise TransientEventNotificationError(
+            f"{transient_failed} device(s) failed transiently"
+        )
+    if receipt_handle:
+        delete_event_notification_message(receipt_handle)
 
 
 async def run_event_notification_sqs_consumer(stop_event: asyncio.Event) -> None:

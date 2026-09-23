@@ -275,6 +275,16 @@ class EventReminderTargetsResponse(BaseModel):
     has_more: bool
 
 
+class EventAnnouncementTargetsResponse(BaseModel):
+    event_id: UUID
+    audience: str
+    recipients: list[EventNotificationRecipient]
+    skip: int
+    limit: int
+    total: int
+    has_more: bool
+
+
 class JoinRequestPushDeviceTarget(BaseModel):
     id: UUID
     token: str
