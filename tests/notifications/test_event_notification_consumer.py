@@ -112,6 +112,54 @@ class TestIdempotencyKey:
         assert t_minus_10_key == f"worker:event-notifications:sent:{event_id}:T_MINUS_10:{device_id}"
         assert t_zero_key == f"worker:event-notifications:sent:{event_id}:T_ZERO:{device_id}"
 
+    @patch(
+        "worker_api.notifications.services.event_notification_consumer.get",
+        return_value="worker:event-notifications:sent:",
+    )
+    def test_reminder_keys_differ_by_day(self, _get):
+        """Regression guard: a multi-day or recurring event sends the same
+        (event, type) pair on consecutive days, exactly 24h apart - the same
+        as EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS. Without the schedule in
+        the key, day two races the TTL of day one and is silently dropped."""
+        event_id = uuid4()
+        device_id = uuid4()
+        day_one = "2026-10-01T08:50:00+00:00"
+        day_two = "2026-10-02T08:50:00+00:00"
+
+        first = _idempotency_key(
+            event_id=event_id,
+            push_device_id=device_id,
+            reminder_type="T_MINUS_10",
+            fire_at=day_one,
+        )
+        second = _idempotency_key(
+            event_id=event_id,
+            push_device_id=device_id,
+            reminder_type="T_MINUS_10",
+            fire_at=day_two,
+        )
+
+        assert first != second
+        assert first == (
+            f"worker:event-notifications:sent:{event_id}:T_MINUS_10:{day_one}:{device_id}"
+        )
+
+    @patch(
+        "worker_api.notifications.services.event_notification_consumer.get",
+        return_value="worker:event-notifications:sent:",
+    )
+    def test_message_without_a_schedule_keeps_the_old_key_shape(self, _get):
+        """Only possible for a message queued before fire_at existed; it must
+        still resolve to the key its earlier delivery would have used."""
+        event_id = uuid4()
+        device_id = uuid4()
+
+        key = _idempotency_key(
+            event_id=event_id, push_device_id=device_id, reminder_type="T_ZERO", fire_at=None
+        )
+
+        assert key == f"worker:event-notifications:sent:{event_id}:T_ZERO:{device_id}"
+
 
 class TestProcessEventNotificationMessage:
     @pytest.mark.asyncio
@@ -403,10 +451,16 @@ class TestProcessEventReminderMessage:
         assert send_kwargs["body"] == "Starting in 10 minutes"
 
         mock_already.assert_called_once_with(
-            event_id=event_id, push_device_id=device.id, reminder_type="T_MINUS_10"
+            event_id=event_id,
+            push_device_id=device.id,
+            reminder_type="T_MINUS_10",
+            fire_at=None,
         )
         mock_mark.assert_called_once_with(
-            event_id=event_id, push_device_id=device.id, reminder_type="T_MINUS_10"
+            event_id=event_id,
+            push_device_id=device.id,
+            reminder_type="T_MINUS_10",
+            fire_at=None,
         )
         mock_delete.assert_called_once_with("r1")
 
@@ -451,7 +505,7 @@ class TestProcessEventReminderMessage:
 
         mock_deactivate.assert_awaited_once_with(push_device_id=device.id)
         mock_mark.assert_called_once_with(
-            event_id=event_id, push_device_id=device.id, reminder_type="T_ZERO"
+            event_id=event_id, push_device_id=device.id, reminder_type="T_ZERO", fire_at=None
         )
         mock_delete.assert_called_once_with("r1")
 

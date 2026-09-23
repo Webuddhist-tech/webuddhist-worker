@@ -52,34 +52,64 @@ def _get_redis_client() -> redis.Redis:
 
 
 def _idempotency_key(
-    *, event_id: UUID, push_device_id: UUID, reminder_type: Optional[str] = None
+    *,
+    event_id: UUID,
+    push_device_id: UUID,
+    reminder_type: Optional[str] = None,
+    fire_at: Optional[str] = None,
 ) -> str:
+    """A key per delivery, not per event.
+
+    fire_at is what separates one occurrence-day from the next. A multi-day
+    or recurring event sends the same (event_id, reminder_type) pair on every
+    day it runs, and consecutive days are exactly 24h apart - the same as
+    EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS - so a key without it would
+    race the TTL and silently drop day two onward.
+
+    Messages predating fire_at keep the old key shape, so a deploy does not
+    strand anything already queued."""
     prefix = get("EVENT_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX")
     if reminder_type:
+        if fire_at:
+            return f"{prefix}{event_id}:{reminder_type}:{fire_at}:{push_device_id}"
         return f"{prefix}{event_id}:{reminder_type}:{push_device_id}"
     return f"{prefix}{event_id}:{push_device_id}"
 
 
 def _already_sent(
-    *, event_id: UUID, push_device_id: UUID, reminder_type: Optional[str] = None
+    *,
+    event_id: UUID,
+    push_device_id: UUID,
+    reminder_type: Optional[str] = None,
+    fire_at: Optional[str] = None,
 ) -> bool:
     client = _get_redis_client()
     return bool(
         client.exists(
             _idempotency_key(
-                event_id=event_id, push_device_id=push_device_id, reminder_type=reminder_type
+                event_id=event_id,
+                push_device_id=push_device_id,
+                reminder_type=reminder_type,
+                fire_at=fire_at,
             )
         )
     )
 
 
 def _mark_sent(
-    *, event_id: UUID, push_device_id: UUID, reminder_type: Optional[str] = None
+    *,
+    event_id: UUID,
+    push_device_id: UUID,
+    reminder_type: Optional[str] = None,
+    fire_at: Optional[str] = None,
 ) -> None:
     client = _get_redis_client()
     client.setex(
         _idempotency_key(
-            event_id=event_id, push_device_id=push_device_id, reminder_type=reminder_type
+            event_id=event_id,
+            push_device_id=push_device_id,
+            reminder_type=reminder_type,
+            fire_at=fire_at,
         ),
         get_int("EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS"),
         "1",
@@ -209,6 +239,7 @@ async def _send_reminder_to_device(
     targets: EventReminderTargetsResponse,
     device: EventPushDeviceTarget,
     semaphore: asyncio.Semaphore,
+    fire_at: Optional[str] = None,
 ) -> str:
     """Return sent | skipped | permanent_failed | transient_failed."""
     async with semaphore:
@@ -219,6 +250,7 @@ async def _send_reminder_to_device(
             event_id=targets.event_id,
             push_device_id=device.id,
             reminder_type=targets.reminder_type,
+            fire_at=fire_at,
         ):
             return "skipped"
 
@@ -234,6 +266,7 @@ async def _send_reminder_to_device(
                 event_id=targets.event_id,
                 push_device_id=device.id,
                 reminder_type=targets.reminder_type,
+                fire_at=fire_at,
             )
             return "sent"
         except PermanentPushTokenError:
@@ -250,6 +283,7 @@ async def _send_reminder_to_device(
                 event_id=targets.event_id,
                 push_device_id=device.id,
                 reminder_type=targets.reminder_type,
+                fire_at=fire_at,
             )
             return "permanent_failed"
         except Exception:
@@ -348,7 +382,9 @@ async def _process_event_reminder(
     semaphore = asyncio.Semaphore(concurrency)
     results = await asyncio.gather(
         *[
-            _send_reminder_to_device(targets=targets, device=device, semaphore=semaphore)
+            _send_reminder_to_device(
+                targets=targets, device=device, semaphore=semaphore, fire_at=fire_at
+            )
             for device in devices
         ]
     )
