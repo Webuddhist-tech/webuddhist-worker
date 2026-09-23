@@ -440,6 +440,104 @@ class TestFetchEventReminderTargets:
         }
 
 
+class TestFetchEventAnnouncementTargets:
+    """The announcement consumer mocks _fetch_all_announcement_targets, so
+    nothing else exercises this route, its query parameters or its response
+    shape. A drift in any of them would surface only as every announcement
+    retrying forever in production."""
+
+    @pytest.mark.asyncio
+    async def test_returns_parsed_targets(self):
+        event_id = uuid4()
+        user_id = uuid4()
+        device_id = uuid4()
+        response = _json_response(
+            {
+                "event_id": str(event_id),
+                "audience": "PARTICIPANTS",
+                "recipients": [
+                    {
+                        "user_id": str(user_id),
+                        "push_devices": [
+                            {"id": str(device_id), "token": "token-1", "platform": "ios"}
+                        ],
+                    }
+                ],
+                "skip": 100,
+                "limit": 50,
+                "total": 120,
+                "has_more": True,
+            }
+        )
+        client_patch, http_client = _patch_async_client(response)
+
+        with client_patch, _patch_config():
+            targets = await backend_client.fetch_event_announcement_targets(
+                event_id=event_id,
+                audience="PARTICIPANTS",
+                skip=100,
+                limit=50,
+            )
+
+        assert targets.event_id == event_id
+        assert targets.audience == "PARTICIPANTS"
+        assert targets.total == 120
+        assert targets.has_more is True
+        assert targets.recipients[0].user_id == user_id
+        assert targets.recipients[0].push_devices[0].id == device_id
+        assert targets.recipients[0].push_devices[0].token == "token-1"
+        assert http_client.get.await_args.args[0] == (
+            f"http://backend.test/internal/event-announcement-targets/{event_id}"
+        )
+        assert http_client.get.await_args.kwargs["params"] == {
+            "audience": "PARTICIPANTS",
+            "skip": 100,
+            "limit": 50,
+        }
+        assert http_client.get.await_args.kwargs["headers"] == {
+            "X-Dispatch-Token": "dispatch-token"
+        }
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_first_page(self):
+        event_id = uuid4()
+        response = _json_response(
+            {
+                "event_id": str(event_id),
+                "audience": "GROUP",
+                "recipients": [],
+                "skip": 0,
+                "limit": 100,
+                "total": 0,
+                "has_more": False,
+            }
+        )
+        client_patch, http_client = _patch_async_client(response)
+
+        with client_patch, _patch_config():
+            await backend_client.fetch_event_announcement_targets(
+                event_id=event_id, audience="GROUP"
+            )
+
+        assert http_client.get.await_args.kwargs["params"] == {
+            "audience": "GROUP",
+            "skip": 0,
+            "limit": 100,
+        }
+
+    @pytest.mark.asyncio
+    async def test_raises_on_error_status(self):
+        event_id = uuid4()
+        response = _json_response({"detail": "Event not found"}, status_code=404)
+        client_patch, _ = _patch_async_client(response)
+
+        with client_patch, _patch_config():
+            with pytest.raises(httpx.HTTPStatusError):
+                await backend_client.fetch_event_announcement_targets(
+                    event_id=event_id, audience="PARTICIPANTS"
+                )
+
+
 class TestFetchVerseOfDayNotificationTargets:
     @pytest.mark.asyncio
     async def test_returns_parsed_targets(self):

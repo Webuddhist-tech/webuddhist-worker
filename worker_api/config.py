@@ -79,6 +79,11 @@ DEFAULTS = dict(
     EVENT_NOTIFICATION_TARGET_PAGE_SIZE=100,
     EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS=86400,
     EVENT_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX="worker:event-notifications:sent:",
+    # Reminder dedup keys gained fire_at, so a retry handled by this
+    # release must still recognize what the previous release recorded
+    # under the fire_at-less key. Turn off once every worker is on this
+    # release, and before enabling the backend per-day reminder flags.
+    EVENT_NOTIFICATION_IDEMPOTENCY_LEGACY_KEY_FALLBACK="true",
 
     # Notification dispatch (Cloud Scheduler -> worker)
     NOTIFICATION_DISPATCH_SECRET_TOKEN="Dispatch",

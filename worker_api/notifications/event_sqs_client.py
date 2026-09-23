@@ -13,8 +13,10 @@ _sqs_client = None
 
 EVENT_CREATED_EVENT = "EVENT_CREATED"
 EVENT_REMINDER_EVENT = "EVENT_REMINDER"
+EVENT_ANNOUNCEMENT_EVENT = "EVENT_ANNOUNCEMENT"
 EVENT_NOTIFICATION_EVENT_VERSION = 1
 EVENT_REMINDER_TYPES = {"T_MINUS_10", "T_ZERO"}
+EVENT_ANNOUNCEMENT_AUDIENCES = {"participants", "group"}
 
 
 def _get_sqs_client():
@@ -88,7 +90,11 @@ def parse_event_notification_message_body(raw_body: str) -> Optional[Dict[str, A
     event_type = body.get("event_type")
     version = body.get("version")
     event_id = body.get("event_id")
-    if event_type not in (EVENT_CREATED_EVENT, EVENT_REMINDER_EVENT):
+    if event_type not in (
+        EVENT_CREATED_EVENT,
+        EVENT_REMINDER_EVENT,
+        EVENT_ANNOUNCEMENT_EVENT,
+    ):
         logger.error("Unsupported event notification event_type: %s", event_type)
         return None
     if version != EVENT_NOTIFICATION_EVENT_VERSION:
@@ -102,4 +108,17 @@ def parse_event_notification_message_body(raw_body: str) -> Optional[Dict[str, A
         if reminder_type not in EVENT_REMINDER_TYPES:
             logger.error("Unsupported event reminder reminder_type: %s", reminder_type)
             return None
+    if event_type == EVENT_ANNOUNCEMENT_EVENT:
+        # An announcement carries everything it needs to be rendered, so a
+        # message missing any of it can never be delivered and is dropped
+        # here rather than failing per device later.
+        if body.get("audience") not in EVENT_ANNOUNCEMENT_AUDIENCES:
+            logger.error(
+                "Unsupported event announcement audience: %s", body.get("audience")
+            )
+            return None
+        for field in ("announcement_id", "title", "body"):
+            if not body.get(field):
+                logger.error("Event announcement message missing %s: %s", field, body)
+                return None
     return body
