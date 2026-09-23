@@ -1,6 +1,7 @@
 """Tests for event notification SQS consumer."""
 import json
-from unittest.mock import AsyncMock, patch
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -13,7 +14,9 @@ from worker_api.notifications.schemas import (
 )
 from worker_api.notifications.services.event_notification_consumer import (
     TransientEventNotificationError,
+    _already_sent,
     _idempotency_key,
+    _mark_sent,
     process_event_notification_message,
 )
 from worker_api.notifications.services.push.fcm_client import PermanentPushTokenError
@@ -159,6 +162,123 @@ class TestIdempotencyKey:
         )
 
         assert key == f"worker:event-notifications:sent:{event_id}:T_ZERO:{device_id}"
+
+
+class TestAlreadySentLegacyKeyFallback:
+    """A worker on the previous release recorded its sends under the
+    fire_at-less key. When one device's transient failure leaves the message
+    for retry and a worker on this release picks it up, the recipients the
+    old worker already reached must still read as sent."""
+
+    @contextmanager
+    def _config(self, *, fallback: bool = True):
+        with patch(
+            "worker_api.notifications.services.event_notification_consumer.get",
+            return_value="worker:event-notifications:sent:",
+        ), patch(
+            "worker_api.notifications.services.event_notification_consumer.get_bool",
+            return_value=fallback,
+        ):
+            yield
+
+    def _redis(self, existing_keys):
+        client = MagicMock()
+        client.exists.side_effect = lambda key: 1 if key in existing_keys else 0
+        return patch(
+            "worker_api.notifications.services.event_notification_consumer._get_redis_client",
+            return_value=client,
+        ), client
+
+    def test_recognizes_a_send_recorded_under_the_legacy_key(self):
+        event_id = uuid4()
+        device_id = uuid4()
+        legacy_key = f"worker:event-notifications:sent:{event_id}:T_MINUS_10:{device_id}"
+        redis_patch, _client = self._redis({legacy_key})
+
+        with redis_patch, self._config():
+            assert _already_sent(
+                event_id=event_id,
+                push_device_id=device_id,
+                reminder_type="T_MINUS_10",
+                fire_at="2026-10-01T08:50:00+00:00",
+            ) is True
+
+    def test_reports_unsent_when_neither_key_exists(self):
+        event_id = uuid4()
+        device_id = uuid4()
+        redis_patch, _client = self._redis(set())
+
+        with redis_patch, self._config():
+            assert _already_sent(
+                event_id=event_id,
+                push_device_id=device_id,
+                reminder_type="T_MINUS_10",
+                fire_at="2026-10-01T08:50:00+00:00",
+            ) is False
+
+    def test_fallback_can_be_turned_off_after_the_rollout(self):
+        """Off, a legacy key no longer suppresses anything - which is what
+        keeps it from swallowing day two once the per-day flags are on."""
+        event_id = uuid4()
+        device_id = uuid4()
+        legacy_key = f"worker:event-notifications:sent:{event_id}:T_MINUS_10:{device_id}"
+        redis_patch, _client = self._redis({legacy_key})
+
+        with redis_patch, self._config(fallback=False):
+            assert _already_sent(
+                event_id=event_id,
+                push_device_id=device_id,
+                reminder_type="T_MINUS_10",
+                fire_at="2026-10-01T08:50:00+00:00",
+            ) is False
+
+    def test_does_not_consult_a_legacy_key_for_announcements(self):
+        """An announcement key has no fire_at-less predecessor, so there is
+        nothing to bridge and no second lookup to pay for."""
+        event_id = uuid4()
+        device_id = uuid4()
+        redis_patch, client = self._redis(set())
+
+        with redis_patch, self._config():
+            assert _already_sent(
+                event_id=event_id,
+                push_device_id=device_id,
+                announcement_id=str(uuid4()),
+            ) is False
+
+        assert client.exists.call_count == 1
+
+
+class TestMarkSentSurvivesRedisFailure:
+    def test_a_redis_error_does_not_escape(self):
+        """_mark_sent runs after FCM accepted the push. Raising here would
+        bucket the device as a transient failure, keep the SQS message and
+        deliver the same notification again once Redis recovers."""
+        client = MagicMock()
+        client.setex.side_effect = RuntimeError("redis down")
+        values = {
+            "EVENT_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX": "worker:event-notifications:sent:",
+            "EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS": 86400,
+        }
+
+        with patch(
+            "worker_api.notifications.services.event_notification_consumer._get_redis_client",
+            return_value=client,
+        ), patch(
+            "worker_api.notifications.services.event_notification_consumer.get",
+            side_effect=lambda key: values[key],
+        ), patch(
+            "worker_api.notifications.services.event_notification_consumer.get_int",
+            side_effect=lambda key: values[key],
+        ):
+            _mark_sent(
+                event_id=uuid4(),
+                push_device_id=uuid4(),
+                reminder_type="T_ZERO",
+                fire_at="2026-10-01T09:00:00+00:00",
+            )
+
+        client.setex.assert_called_once()
 
 
 class TestProcessEventNotificationMessage:

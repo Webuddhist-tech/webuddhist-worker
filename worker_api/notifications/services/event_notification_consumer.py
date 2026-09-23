@@ -92,17 +92,43 @@ def _already_sent(
     announcement_id: Optional[str] = None,
 ) -> bool:
     client = _get_redis_client()
-    return bool(
-        client.exists(
-            _idempotency_key(
-                event_id=event_id,
-                push_device_id=push_device_id,
-                reminder_type=reminder_type,
-                fire_at=fire_at,
-                announcement_id=announcement_id,
+    key = _idempotency_key(
+        event_id=event_id,
+        push_device_id=push_device_id,
+        reminder_type=reminder_type,
+        fire_at=fire_at,
+        announcement_id=announcement_id,
+    )
+    if client.exists(key):
+        return True
+
+    # Rolling-deploy bridge. A worker on the previous release recorded its
+    # sends under the fire_at-less key, and a message it left for retry (one
+    # device's transient failure keeps the whole message) can be picked up by
+    # a worker on this release. Checking only the new key would make every
+    # recipient the old worker already reached look unsent, and the retry
+    # would push the same reminder to them a second time.
+    #
+    # This can only ever match a day-one reminder: the previous release's
+    # backend held one reminder row per (event_id, reminder_type), so a
+    # legacy key cannot belong to day two of a multi-day run. Once every
+    # worker is on this release, turn the fallback off - and turn it off
+    # before enabling the backend's per-day reminder flags, so a legacy key
+    # can never outlive its own event into a day the new schema writes.
+    if reminder_type and fire_at and get_bool(
+        "EVENT_NOTIFICATION_IDEMPOTENCY_LEGACY_KEY_FALLBACK"
+    ):
+        return bool(
+            client.exists(
+                _idempotency_key(
+                    event_id=event_id,
+                    push_device_id=push_device_id,
+                    reminder_type=reminder_type,
+                )
             )
         )
-    )
+
+    return False
 
 
 def _mark_sent(
@@ -113,18 +139,39 @@ def _mark_sent(
     fire_at: Optional[str] = None,
     announcement_id: Optional[str] = None,
 ) -> None:
-    client = _get_redis_client()
-    client.setex(
-        _idempotency_key(
-            event_id=event_id,
-            push_device_id=push_device_id,
-            reminder_type=reminder_type,
-            fire_at=fire_at,
-            announcement_id=announcement_id,
-        ),
-        get_int("EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS"),
-        "1",
-    )
+    """Record a delivery, but never turn a failed recording into a failed send.
+
+    This runs *after* FCM has accepted the push, so the notification is
+    already on its way. Letting a Redis error escape would put the device in
+    the transient-failure bucket, which keeps the SQS message for retry and
+    pushes the same notification to that device again once Redis recovers -
+    a duplicate caused entirely by the bookkeeping, not by the delivery.
+
+    Deliberately asymmetric with _already_sent, which does let Redis errors
+    escape: with no way to check what has been sent, not sending is the safe
+    answer, and the retry costs nothing. Here the send has happened, so the
+    safe answer is to carry on and log the gap."""
+    try:
+        client = _get_redis_client()
+        client.setex(
+            _idempotency_key(
+                event_id=event_id,
+                push_device_id=push_device_id,
+                reminder_type=reminder_type,
+                fire_at=fire_at,
+                announcement_id=announcement_id,
+            ),
+            get_int("EVENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS"),
+            "1",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record idempotency marker for device %s on event %s; "
+            "the push was delivered, so a later retry of this message may "
+            "duplicate it",
+            push_device_id,
+            event_id,
+        )
 
 
 def _parse_uuid(value: Any) -> Optional[UUID]:
