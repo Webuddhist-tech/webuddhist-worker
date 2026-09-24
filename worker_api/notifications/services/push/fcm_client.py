@@ -42,12 +42,20 @@ def build_chat_notification_data(
     group_id: UUID | None,
     title: str,
     body: str,
+    message_type: str = "TEXT",
+    image_url: str | None = None,
 ) -> dict[str, str]:
-    """FCM data payloads require string values."""
+    """FCM data payloads require string values.
+
+    A prayer request is still a chat message on the wire - same queue, same
+    room, same deep link - but it gets its own notification_type so the client
+    can render it as a prayer rather than as someone talking."""
+    is_prayer_request = message_type == "PRAYER"
     return {
-        "notification_type": "CHAT_MESSAGE",
+        "notification_type": "PRAYER_REQUEST" if is_prayer_request else "CHAT_MESSAGE",
         "session_type": "CHAT",
         "chat_kind": chat_kind,
+        "message_type": message_type,
         "room_id": str(room_id),
         "message_id": str(message_id),
         "sender_id": str(sender_id),
@@ -55,7 +63,7 @@ def build_chat_notification_data(
         "source_id": str(room_id),
         "title": title,
         "body": body,
-        "image_url": "",
+        "image_url": image_url or "",
     }
 
 
@@ -206,11 +214,14 @@ async def send_chat_push_notification(
     group_id: UUID | None,
     title: str,
     body: str,
+    message_type: str = "TEXT",
+    image_url: str | None = None,
 ) -> None:
     await send_fcm_notification(
         device_token=device_token,
         title=title,
         body=body,
+        image_url=image_url,
         data=build_chat_notification_data(
             room_id=room_id,
             message_id=message_id,
@@ -219,6 +230,8 @@ async def send_chat_push_notification(
             group_id=group_id,
             title=title,
             body=body,
+            message_type=message_type,
+            image_url=image_url,
         ),
     )
 

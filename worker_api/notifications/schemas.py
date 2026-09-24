@@ -184,6 +184,8 @@ class ChatNotificationTargetsResponse(BaseModel):
     sender_id: UUID
     chat_kind: str
     group_id: UUID | None = None
+    message_type: str = "TEXT"
+    image_url: str | None = None
     title: str
     body: str
     recipients: list[ChatNotificationRecipient]

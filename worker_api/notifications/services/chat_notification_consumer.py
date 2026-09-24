@@ -270,6 +270,8 @@ async def _send_to_device(
                 group_id=targets.group_id,
                 title=targets.title,
                 body=targets.body,
+                message_type=targets.message_type,
+                image_url=targets.image_url,
             )
             _mark_sent(message_id=targets.message_id, push_device_id=device.id)
             return "sent"

@@ -71,6 +71,7 @@ class TestBuildChatNotificationData:
             "notification_type": "CHAT_MESSAGE",
             "session_type": "CHAT",
             "chat_kind": "GROUP",
+            "message_type": "TEXT",
             "room_id": str(room_id),
             "message_id": str(message_id),
             "sender_id": str(sender_id),
@@ -80,6 +81,26 @@ class TestBuildChatNotificationData:
             "body": "Alice: Hello",
             "image_url": "",
         }
+
+    def test_prayer_request_gets_own_type_and_image(self):
+        room_id = uuid4()
+        data = build_chat_notification_data(
+            room_id=room_id,
+            message_id=uuid4(),
+            sender_id=uuid4(),
+            chat_kind="EVENT",
+            group_id=uuid4(),
+            title="Tenzin Youdon is requesting a prayer 🙏",
+            body="For my niece Sarah.",
+            message_type="PRAYER",
+            image_url="https://example.com/event.png",
+        )
+        assert data["notification_type"] == "PRAYER_REQUEST"
+        assert data["message_type"] == "PRAYER"
+        assert data["image_url"] == "https://example.com/event.png"
+        # Still routes into the room it came from.
+        assert data["session_type"] == "CHAT"
+        assert data["source_id"] == str(room_id)
 
     def test_empty_group_id_for_private(self):
         data = build_chat_notification_data(
