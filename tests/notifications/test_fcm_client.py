@@ -71,7 +71,6 @@ class TestBuildChatNotificationData:
             "notification_type": "CHAT_MESSAGE",
             "session_type": "CHAT",
             "chat_kind": "GROUP",
-            "message_type": "TEXT",
             "room_id": str(room_id),
             "message_id": str(message_id),
             "sender_id": str(sender_id),
@@ -96,8 +95,9 @@ class TestBuildChatNotificationData:
             image_url="https://example.com/event.png",
         )
         assert data["notification_type"] == "PRAYER_REQUEST"
-        assert data["message_type"] == "PRAYER"
         assert data["image_url"] == "https://example.com/event.png"
+        # FCM reserves "message_type" as a data key and 400s the whole send.
+        assert "message_type" not in data
         # Still routes into the room it came from.
         assert data["session_type"] == "CHAT"
         assert data["source_id"] == str(room_id)

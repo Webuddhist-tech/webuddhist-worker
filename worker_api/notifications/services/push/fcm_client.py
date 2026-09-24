@@ -49,13 +49,15 @@ def build_chat_notification_data(
 
     A prayer request is still a chat message on the wire - same queue, same
     room, same deep link - but it gets its own notification_type so the client
-    can render it as a prayer rather than as someone talking."""
+    can render it as a prayer rather than as someone talking.
+
+    message_type only picks that notification_type; it is never sent as a data
+    key. FCM reserves "message_type" and rejects the whole send with a 400."""
     is_prayer_request = message_type == "PRAYER"
     return {
         "notification_type": "PRAYER_REQUEST" if is_prayer_request else "CHAT_MESSAGE",
         "session_type": "CHAT",
         "chat_kind": chat_kind,
-        "message_type": message_type,
         "room_id": str(room_id),
         "message_id": str(message_id),
         "sender_id": str(sender_id),
