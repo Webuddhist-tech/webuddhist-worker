@@ -425,9 +425,42 @@ Configure:
 | `CHAT_NOTIFICATION_SQS_QUEUE_URL` | Dedicated SQS queue (backend producer, worker consumer) |
 | `CHAT_NOTIFICATION_SQS_POLL_ENABLED` | Worker poll kill switch (`true`/`false`) |
 | `CHAT_NOTIFICATION_SEND_CONCURRENCY` | Max concurrent FCM sends per event |
+| `CHAT_NOTIFICATION_MESSAGE_CONCURRENCY` | Max chat SQS events processed in parallel, so a slow fan-out doesn't delay others |
 | `CHAT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS` | Redis TTL for `message_id + push_device_id` dedupe |
 
 Attach a dead-letter queue (DLQ) to the chat notification SQS queue for poison messages.
+
+## Prayer notification delivery
+
+Both prayer pushes use their own SQS queue, separate from the chat queue, so a
+burst of prayers can never delay ordinary chat message pushes:
+
+| Push | Event on the prayer queue | Recipients |
+|------|---------------------------|------------|
+| Prayer request (a chat message with `message_type=PRAYER`) | `{ "event_type": "CHAT_MESSAGE_CREATED", "version": 1, "message_id": "..." }` | Every member of the room, like any chat message |
+| Someone prayed for your request | `{ "event_type": "PRAYER_RECEIVED", "version": 1, "prayer_id": "..." }` | The requester only |
+
+The worker handles each exactly as it would on the chat queue
+(`/internal/chat-notification-targets/{message_id}` or
+`/internal/prayer-notification-targets/{prayer_id}`), then deletes it from the
+prayer queue.
+
+The chat consumer still handles both events if they arrive on
+`CHAT_NOTIFICATION_SQS_QUEUE_URL`. The backend falls back to the chat queue
+when `PRAYER_NOTIFICATION_SQS_QUEUE_URL` isn't set on its side, and events
+queued before the switch are still delivered.
+
+Configure:
+
+| Variable | Purpose |
+|----------|---------|
+| `PRAYER_NOTIFICATION_SQS_QUEUE_URL` | Dedicated SQS queue (backend producer, worker consumer) |
+| `PRAYER_NOTIFICATION_SQS_POLL_ENABLED` | Worker poll kill switch (`true`/`false`) |
+| `PRAYER_NOTIFICATION_SEND_CONCURRENCY` | Max concurrent FCM sends per event |
+| `PRAYER_NOTIFICATION_MESSAGE_CONCURRENCY` | Max prayer SQS events processed in parallel |
+| `PRAYER_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS` | Redis TTL for `prayer_id + push_device_id` dedupe |
+
+Attach a dead-letter queue (DLQ) to the prayer notification SQS queue for poison messages.
 
 ## Join request notification delivery
 

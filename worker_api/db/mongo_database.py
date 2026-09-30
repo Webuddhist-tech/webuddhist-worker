@@ -20,6 +20,9 @@ from worker_api.notifications.services.group_post_notification_consumer import (
 from worker_api.notifications.services.join_request_notification_consumer import (
     run_join_request_notification_sqs_consumer,
 )
+from worker_api.notifications.services.prayer_notification_consumer import (
+    run_prayer_notification_sqs_consumer,
+)
 
 mongodb_client = None
 mongodb = None
@@ -47,6 +50,7 @@ async def lifespan(api: FastAPI):
     consumer_tasks = [
         asyncio.create_task(run_audio_sqs_consumer(stop_event)),
         asyncio.create_task(run_chat_notification_sqs_consumer(stop_event)),
+        asyncio.create_task(run_prayer_notification_sqs_consumer(stop_event)),
         asyncio.create_task(run_join_request_notification_sqs_consumer(stop_event)),
         asyncio.create_task(run_group_post_notification_sqs_consumer(stop_event)),
         asyncio.create_task(run_event_notification_sqs_consumer(stop_event)),

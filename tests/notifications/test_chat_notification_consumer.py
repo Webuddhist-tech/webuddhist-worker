@@ -286,3 +286,36 @@ class TestProcessChatNotificationMessage:
 
         mock_send.assert_not_called()
         mock_delete.assert_called_once_with("r1")
+
+
+class TestRunChatNotificationSqsConsumer:
+    @pytest.mark.asyncio
+    async def test_slow_message_does_not_block_later_message(self):
+        import asyncio
+
+        from worker_api.notifications.services import chat_notification_consumer as consumer
+
+        stop_event = asyncio.Event()
+        release_slow = asyncio.Event()
+        fast_done = asyncio.Event()
+        batches = [[{"MessageId": "slow"}, {"MessageId": "fast"}]]
+
+        def fake_receive():
+            return batches.pop(0) if batches else []
+
+        async def fake_process(message):
+            if message["MessageId"] == "slow":
+                await release_slow.wait()
+            else:
+                fast_done.set()
+
+        with patch.object(consumer, "is_chat_notification_sqs_poll_enabled", return_value=True), \
+                patch.object(consumer, "receive_chat_notification_messages", side_effect=fake_receive), \
+                patch.object(consumer, "process_chat_notification_message", side_effect=fake_process), \
+                patch.object(consumer, "get_int", return_value=10):
+            runner = asyncio.create_task(consumer.run_chat_notification_sqs_consumer(stop_event))
+            # The fast message finishes while the slow one is still in flight.
+            await asyncio.wait_for(fast_done.wait(), timeout=2)
+            stop_event.set()
+            release_slow.set()
+            await asyncio.wait_for(runner, timeout=2)

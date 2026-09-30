@@ -35,6 +35,7 @@ Set at least:
 | `DATABASE_URL` | Worker-owned Postgres (reminders / notification tables only) |
 | `AUDIO_SQS_QUEUE_URL` | SQS queue for audio jobs produced by the backend |
 | `CHAT_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for chat message notification events produced by the backend |
+| `PRAYER_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for prayer (`PRAYER_RECEIVED`) notification events produced by the backend |
 | `CACHE_CONNECTION_STRING` | Redis URL used for chat notification per-device idempotency |
 
 The worker talks to the backend for audio job status, generation payloads
