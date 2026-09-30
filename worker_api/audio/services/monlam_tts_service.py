@@ -83,7 +83,7 @@ def generate_monlam_tts_audio(content: str, voice_name: str | None = None) -> by
     if not content.strip():
         raise ValueError("Content cannot be empty")
 
-    chunks = chunk_tibetan_text(content, max_syllables=25)
+    chunks = chunk_tibetan_text(content)
     if not chunks:
         raise ValueError("Content cannot be empty")
 

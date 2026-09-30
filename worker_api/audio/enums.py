@@ -33,5 +33,12 @@ class MonlamVoiceName(str, enum.Enum):
     WANGDONTSO_KHAM_FEMALE = "wangdontso_kham_female"
 
 
+class AudioJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 ContentTypeEnum = Enum(ContentType)
 PlanAudioTypeEnum = Enum(PlanAudioType)

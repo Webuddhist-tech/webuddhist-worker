@@ -23,7 +23,9 @@ python-dotenv = "^1.0.1"
 python-jose = "^3.3.0"
 sqlalchemy = "^2.0.36"
 starlette = "^0.41.3"
-httpx = "^0.28.1"
+httpx = {version = "^0.28.1", extras = ["http2"]}
+google-auth = "^2.36.0"
+tzdata = "^2025.1"
 jinja2 = "^3.1.4"
 boto3 = "^1.35.97"
 python-multipart = "^0.0.20"
@@ -37,8 +39,8 @@ elasticsearch = "^9.0.1"
 toml = "^0.10.2"
 mailtrap = "^2.3.0"
 google-genai = "^2.0"
-botok = "^0.8"
 
+firebase-admin = "^7.4.0"
 [tool.poetry.scripts]
 start = "uvicorn:main"
 

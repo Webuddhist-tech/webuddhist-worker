@@ -8,7 +8,7 @@ from worker_api.audio.services.tts_service import (
     _generate_gemini_tts_audio,
     _convert_to_wav,
     _parse_audio_mime_type,
-    SUPPORTED_TTS_LANGUAGES,
+    MONLAM_TTS_LANGUAGE,
 )
 from worker_api.audio.enums import PlanAudioType
 
@@ -38,10 +38,18 @@ class TestGenerateTtsAudio:
         with pytest.raises(ValueError, match="Content cannot be empty"):
             generate_tts_audio("   ", PlanAudioType.RECITATION)
     
-    def test_unsupported_language_raises_error(self):
-        with pytest.raises(ValueError, match="Unsupported language for TTS"):
-            generate_tts_audio("Hello", PlanAudioType.RECITATION, language="fr")
-    
+    @patch("worker_api.audio.services.tts_service._generate_gemini_tts_audio")
+    def test_other_languages_use_gemini(self, mock_gemini):
+        mock_gemini.return_value = b"fake_wav_data"
+
+        result = generate_tts_audio("Bonjour le monde", PlanAudioType.RECITATION, language="fr")
+
+        mock_gemini.assert_called_once_with(
+            content="Bonjour le monde",
+            audio_type=PlanAudioType.RECITATION,
+        )
+        assert result == b"fake_wav_data"
+
     @patch("worker_api.audio.services.tts_service.generate_monlam_tts_audio")
     def test_tibetan_language_uses_monlam(self, mock_monlam):
         mock_monlam.return_value = b"fake_audio_data"
@@ -77,9 +85,8 @@ class TestGenerateTtsAudio:
         )
         assert result == b"fake_wav_data"
     
-    def test_supported_languages(self):
-        assert "en" in SUPPORTED_TTS_LANGUAGES
-        assert "bo" in SUPPORTED_TTS_LANGUAGES
+    def test_monlam_language_constant(self):
+        assert MONLAM_TTS_LANGUAGE == "bo"
 
 
 class TestGenerateGeminiTtsAudio:

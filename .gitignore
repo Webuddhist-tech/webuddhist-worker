@@ -2,7 +2,7 @@
 *.py[cod]
 __pycache__/
 *.so
-
+secrets
 # Virtualenv
 venv/
 ENV/

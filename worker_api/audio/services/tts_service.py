@@ -5,7 +5,7 @@ from worker_api.audio.services.audio_prompt import build_tts_prompt, DEFAULT_VOI
 from worker_api.audio.services.monlam_tts_service import generate_monlam_tts_audio
 from worker_api.audio.enums import PlanAudioType
 
-SUPPORTED_TTS_LANGUAGES = {"en", "bo"}
+MONLAM_TTS_LANGUAGE = "bo"
 
 
 def _normalize_language(language: str) -> str:
@@ -21,13 +21,7 @@ def generate_tts_audio(
     if not content.strip():
         raise ValueError("Content cannot be empty")
 
-    normalized_language = _normalize_language(language)
-    if normalized_language not in SUPPORTED_TTS_LANGUAGES:
-        raise ValueError(
-            f"Unsupported language for TTS: {language}. Supported: {', '.join(sorted(SUPPORTED_TTS_LANGUAGES))}"
-        )
-
-    if normalized_language == "bo":
+    if _normalize_language(language) == MONLAM_TTS_LANGUAGE:
         return generate_monlam_tts_audio(content, voice_name=voice_name)
 
     return _generate_gemini_tts_audio(content=content, audio_type=audio_type)

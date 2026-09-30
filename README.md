@@ -2,6 +2,11 @@
 
 This is the worker backend API for the WebBuddhist application.
 
+It handles background work such as TTS/audio generation and notification
+dispatch. Plan/content data owned by the main backend is accessed **only via
+HTTP APIs** — the worker does not share or query the backend Postgres schema
+for subtasks, plan days, or related domain tables.
+
 ## Installation
 
 Follow these steps to set up the project on your local machine:
@@ -19,30 +24,40 @@ Follow these steps to set up the project on your local machine:
     poetry install
     ```
 
-## Database Setup
+## Configuration
 
-This worker backend shares the same databases as `app-pecha-backend`. Ensure the databases are running:
+Set at least:
 
-1. Navigate to the app-pecha-backend local setup directory:
-    ```sh
-    cd ../app-pecha-backend/local_setup
-    ```
-2. Start the databases using Docker (if not already running):
-    ```sh
-    docker-compose up -d
-    ```
-3. Return to webuddhist-worker directory:
-    ```sh
-    cd ../../webuddhist-worker
-    ```
-4. Apply database migrations:
-    ```sh
-    poetry run alembic upgrade head
-    ```
+| Variable | Purpose |
+|----------|---------|
+| `BACKEND_API_URL` | Base URL of the main backend API (default `http://127.0.0.1:8000/api/v1`) |
+| `NOTIFICATION_DISPATCH_SECRET_TOKEN` | Shared secret sent as `X-Dispatch-Token` on internal backend calls |
+| `DATABASE_URL` | Worker-owned Postgres (reminders / notification tables only) |
+| `AUDIO_SQS_QUEUE_URL` | SQS queue for audio jobs produced by the backend |
+| `CHAT_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for chat message notification events produced by the backend |
+| `PRAYER_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for prayer (`PRAYER_RECEIVED`) notification events produced by the backend |
+| `CACHE_CONNECTION_STRING` | Redis URL used for chat notification per-device idempotency |
+
+The worker talks to the backend for audio job status, generation payloads
+(day/subtask content), and persisting generation results. Do **not** point
+`DATABASE_URL` at the backend database for plan/subtask data.
+
+## Database Setup (worker-owned DB only)
+
+Start local infra from the backend repo if needed (Postgres/Mongo/Redis/etc.),
+then apply **worker** migrations against the worker database:
+
+```sh
+poetry run alembic upgrade head
+```
+
+These migrations cover worker tables (e.g. upcoming reminders), not backend
+plan tables.
 
 ## Running the Application
 
-1. Start the FastAPI development server:
+1. Ensure the main backend is running (default `http://127.0.0.1:8000`).
+2. Start the worker:
     ```sh
     poetry run uvicorn worker_api.app:api --port 8001 --reload
     ```
@@ -65,17 +80,17 @@ To check the coverage:
 poetry run pytest --cov=worker_api
 ```
 ```sh
-poetry run coverage html 
+poetry run coverage html
 ```
 
 Open the coverage report:
 ```sh
-open htmlcov/index.html  
+open htmlcov/index.html
 ```
 
 ## Alembic Commands
 
-Alembic is used for handling database migrations. Here are some common commands:
+Alembic is used for handling **worker-owned** database migrations:
 
 1. Create a new migration:
     ```sh
@@ -104,23 +119,20 @@ Alembic is used for handling database migrations. Here are some common commands:
 
 ## Shared Infrastructure
 
-This worker backend shares the following infrastructure with `app-pecha-backend`:
-- PostgreSQL database (port 5434)
-- MongoDB database (port 27017)
-- Redis/Dragonfly cache (port 6379)
-- Elasticsearch (port 9200)
+This worker can reuse the same local Docker services as `WeBuddhist-Backend`
+(Postgres, MongoDB, Redis, Elasticsearch), but:
 
-Both backends can run simultaneously:
-- `app-pecha-backend`: http://127.0.0.1:8000
+- Backend plan/content data is fetched and updated through backend internal APIs
+- Worker Postgres should only hold worker-owned tables
+
+Typical local ports:
+
+- PostgreSQL: 5434
+- MongoDB: 27017
+- Redis/Dragonfly: 6379
+- Elasticsearch: 9200
+
+Both apps can run simultaneously:
+
+- `WeBuddhist-Backend`: http://127.0.0.1:8000
 - `webuddhist-worker`: http://127.0.0.1:8001
-
-## Transferring Endpoints
-
-When transferring endpoints from `app-pecha-backend`:
-1. Copy the relevant models, services, repositories, and views
-2. Update imports to use `worker_api` instead of `pecha_api`
-3. Add model imports to `migrations/env.py` for Alembic
-4. Add document models to `worker_api/db/mongo_database.py` for Beanie
-5. Include routers in `worker_api/app.py`
-6. Run migrations if needed
-7. Update tests accordingly

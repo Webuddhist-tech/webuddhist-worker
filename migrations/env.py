@@ -6,9 +6,7 @@ from sqlalchemy import pool
 from alembic import context
 from worker_api.db.database import Base
 
-# Import models here as they are added when transferring endpoints
-# Example:
-# from worker_api.example.example_models import ExampleModel
+from worker_api.notifications.models.reminder_models import UpcomingReminder
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
