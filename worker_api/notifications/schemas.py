@@ -208,6 +208,8 @@ class PrayerNotificationTargetsResponse(BaseModel):
     event_id: UUID | None = None
     requester_id: UUID
     prayer_count: int
+    # The event's image for an event room, otherwise the room's; presigned.
+    image_url: str | None = None
     title: str
     body: str
     recipients: list[ChatNotificationRecipient]

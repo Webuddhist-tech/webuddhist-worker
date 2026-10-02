@@ -80,6 +80,7 @@ def build_prayer_notification_data(
     prayer_count: int,
     title: str,
     body: str,
+    image_url: str | None = None,
 ) -> dict[str, str]:
     """FCM data payloads require string values.
 
@@ -98,7 +99,7 @@ def build_prayer_notification_data(
         "source_id": str(room_id),
         "title": title,
         "body": body,
-        "image_url": "",
+        "image_url": image_url or "",
     }
 
 
@@ -250,11 +251,13 @@ async def send_prayer_push_notification(
     prayer_count: int,
     title: str,
     body: str,
+    image_url: str | None = None,
 ) -> None:
     await send_fcm_notification(
         device_token=device_token,
         title=title,
         body=body,
+        image_url=image_url,
         data=build_prayer_notification_data(
             room_id=room_id,
             message_id=message_id,
@@ -265,6 +268,7 @@ async def send_prayer_push_notification(
             prayer_count=prayer_count,
             title=title,
             body=body,
+            image_url=image_url,
         ),
     )
 
