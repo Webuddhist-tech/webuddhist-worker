@@ -8,6 +8,7 @@ from worker_api.notifications.services.push.fcm_client import (
     build_event_notification_data,
     build_event_reminder_notification_data,
     build_group_post_notification_data,
+    build_prayer_notification_data,
     build_routine_notification_data,
     send_chat_push_notification,
     send_event_push_notification,
@@ -101,6 +102,38 @@ class TestBuildChatNotificationData:
         # Still routes into the room it came from.
         assert data["session_type"] == "CHAT"
         assert data["source_id"] == str(room_id)
+
+    def test_prayer_received_carries_the_event_image(self):
+        event_id = uuid4()
+        data = build_prayer_notification_data(
+            room_id=uuid4(),
+            message_id=uuid4(),
+            prayer_id=uuid4(),
+            chat_kind="EVENT",
+            group_id=uuid4(),
+            event_id=event_id,
+            prayer_count=3,
+            title="Kunsang prayed for you",
+            body="Medicine Buddha Puja",
+            image_url="https://example.com/event.png",
+        )
+        assert data["notification_type"] == "PRAYER_RECEIVED"
+        assert data["event_id"] == str(event_id)
+        assert data["image_url"] == "https://example.com/event.png"
+
+    def test_prayer_received_without_image_sends_empty_string(self):
+        data = build_prayer_notification_data(
+            room_id=uuid4(),
+            message_id=uuid4(),
+            prayer_id=uuid4(),
+            chat_kind="GROUP",
+            group_id=uuid4(),
+            event_id=None,
+            prayer_count=1,
+            title="Kunsang prayed for you",
+            body="Sangha",
+        )
+        assert data["image_url"] == ""
 
     def test_empty_group_id_for_private(self):
         data = build_chat_notification_data(

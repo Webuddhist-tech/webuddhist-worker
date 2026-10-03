@@ -29,6 +29,36 @@ DEFAULTS = dict(
     MONLAM_TTS_MODEL_NAME="",
     MONLAM_TTS_VOICE_NAME="",
 
+    # OpenPecha library API (segments, texts and their relations)
+    OPENPECHA_LIBRARY_URL="https://library.webuddhist.com",
+    OPENPECHA_APP_NAME="webuddhist",
+    # Sent as X-API-Key when set
+    OPENPECHA_API_KEY="",
+    OPENPECHA_TIMEOUT_SECONDS=15,
+    OPENPECHA_MAX_CONCURRENCY=16,
+
+    # Segment AI chat (question answering over a segment's commentaries and translations)
+    SEGMENT_CHAT_ENABLED="true",
+    SEGMENT_CHAT_LLM_PROVIDER="gemini",
+    SEGMENT_CHAT_LLM_MODEL="gemini-2.5-flash",
+    # Falls back to GEMINI_API_KEY when empty
+    SEGMENT_CHAT_LLM_API_KEY="",
+    SEGMENT_CHAT_LLM_TEMPERATURE=0.3,
+    SEGMENT_CHAT_LLM_MAX_OUTPUT_TOKENS=2048,
+    # 0 turns thinking off (fastest first token); -1 keeps the model default
+    SEGMENT_CHAT_LLM_THINKING_BUDGET=0,
+    SEGMENT_CHAT_MAX_CONTEXT_CHARS=60000,
+    SEGMENT_CHAT_MAX_SOURCE_CHARS=8000,
+    # Library page size (max 100), page cap, and cap on related segments read
+    SEGMENT_CHAT_RELATED_PAGE_SIZE=100,
+    SEGMENT_CHAT_MAX_RELATED_PAGES=10,
+    SEGMENT_CHAT_MAX_SOURCES=80,
+    SEGMENT_CHAT_CONTEXT_CACHE_TTL_SECONDS=600,
+    SEGMENT_CHAT_CONTEXT_CACHE_KEY_PREFIX="worker:segment-chat:context:",
+    # Requests per client IP per minute; 0 disables the limit
+    SEGMENT_CHAT_RATE_LIMIT_PER_MINUTE=20,
+    SEGMENT_CHAT_RATE_LIMIT_KEY_PREFIX="worker:segment-chat:rate:",
+
     # Audio job SQS consumer (backend producer → worker consumer)
     AUDIO_SQS_QUEUE_URL="",
     AUDIO_SQS_WAIT_TIME_SECONDS=20,
