@@ -36,7 +36,9 @@ Set at least:
 | `AUDIO_SQS_QUEUE_URL` | SQS queue for audio jobs produced by the backend |
 | `CHAT_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for chat message notification events produced by the backend |
 | `PRAYER_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for prayer (`PRAYER_RECEIVED`) notification events produced by the backend |
-| `CACHE_CONNECTION_STRING` | Redis URL used for chat notification per-device idempotency |
+| `CACHE_CONNECTION_STRING` | Redis URL used for chat notification per-device idempotency, and the segment chat source cache and rate limit |
+| `SEGMENT_CHAT_LLM_MODEL` / `SEGMENT_CHAT_LLM_API_KEY` | LLM for segment AI chat (Gemini; the key falls back to `GEMINI_API_KEY`). All options: [docs/segment-chat-api.md](docs/segment-chat-api.md) |
+| `OPENPECHA_LIBRARY_URL` | OpenPecha library API that segment AI chat reads segments and related texts from (default `https://library.webuddhist.com`) |
 
 The worker talks to the backend for audio job status, generation payloads
 (day/subtask content), and persisting generation results. Do **not** point

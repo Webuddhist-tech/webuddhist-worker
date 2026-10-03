@@ -7,6 +7,7 @@ from worker_api.db.mongo_database import lifespan
 from worker_api.audio.audio_views import audio_router
 from worker_api.notifications.internal_views import internal_router
 from worker_api.notifications.reminder_views import reminder_router
+from worker_api.segment_chat.segment_chat_views import segment_chat_router
 
 import uvicorn
 
@@ -21,6 +22,7 @@ api = FastAPI(
 api.include_router(audio_router)
 api.include_router(internal_router)
 api.include_router(reminder_router)
+api.include_router(segment_chat_router)
 
 api.add_middleware(
     CORSMiddleware,
