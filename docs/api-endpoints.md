@@ -15,6 +15,7 @@ This document describes every HTTP endpoint exposed by the WebBuddhist Worker AP
 | GET | `/health` | None | Liveness check |
 | GET | `/props` | None | Service metadata |
 | POST | `/audio/generate` | None | Generate TTS audio |
+| POST | `/segment-chat/stream` | None (rate limited) | Stream an AI answer about a segment, citing its translations and commentaries — see [segment-chat-api.md](segment-chat-api.md) |
 | POST | `/notifications/reminders` | None | Enroll a plan reminder |
 | PUT | `/notifications/reminders/{user_id}/{plan_id}` | None | Update a pending reminder |
 | DELETE | `/notifications/reminders/{user_id}/{plan_id}` | None | Cancel a pending reminder |

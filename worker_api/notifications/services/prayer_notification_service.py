@@ -122,6 +122,7 @@ async def _send_to_device(
                 prayer_count=targets.prayer_count,
                 title=targets.title,
                 body=targets.body,
+                image_url=targets.image_url,
             )
             _mark_sent(prayer_id=targets.prayer_id, push_device_id=device.id)
             return "sent"

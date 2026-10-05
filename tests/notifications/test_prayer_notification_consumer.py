@@ -42,6 +42,7 @@ def _targets(*, prayer_id, devices):
         event_id=None,
         requester_id=uuid4(),
         prayer_count=3,
+        image_url="https://cdn.test/event.png",
         title="Tenzin prayed for you",
         body="🙏",
         recipients=[ChatNotificationRecipient(user_id=uuid4(), push_devices=devices)],
@@ -109,6 +110,7 @@ class TestProcessPrayerNotificationMessage:
 
         mock_send.assert_awaited_once()
         assert mock_send.await_args.kwargs["prayer_id"] == prayer_id
+        assert mock_send.await_args.kwargs["image_url"] == "https://cdn.test/event.png"
         mock_mark.assert_called_once_with(prayer_id=prayer_id, push_device_id=device.id)
         mock_delete.assert_called_once_with("r1")
 
