@@ -10,6 +10,11 @@ from worker_api.config import get, get_bool
 
 logger = logging.getLogger(__name__)
 
+
+class TransientPrayerTranslationError(Exception):
+    """Gemini or response parsing failed in a way that may succeed on retry."""
+
+
 PRAYER_TRANSLATION_LANGUAGE_CODES = ("EN", "BO", "ZH")
 PRAYER_REQUEST_BODY_MAX_LENGTH = 280
 
@@ -66,10 +71,10 @@ def _parse_prayer_translation_payload(
     for code in PRAYER_TRANSLATION_LANGUAGE_CODES:
         text = translations_raw.get(code)
         if text is None:
-            continue
+            return None
         cleaned = str(text).strip()
         if not cleaned:
-            continue
+            return None
         if len(cleaned) > PRAYER_REQUEST_BODY_MAX_LENGTH:
             cleaned = cleaned[:PRAYER_REQUEST_BODY_MAX_LENGTH]
         translations[code] = cleaned
@@ -83,12 +88,13 @@ def prayer_translation_enabled() -> bool:
     return bool((get("GEMINI_API_KEY") or "").strip())
 
 
-async def translate_prayer_request(body: str) -> Optional[Tuple[str, Dict[str, str]]]:
+async def translate_prayer_request(body: str) -> Tuple[str, Dict[str, str]]:
     if not prayer_translation_enabled():
-        return None
+        raise TransientPrayerTranslationError("prayer translation is disabled")
+
     api_key = (get("GEMINI_API_KEY") or "").strip()
     if not api_key:
-        return None
+        raise TransientPrayerTranslationError("GEMINI_API_KEY is not configured")
 
     model = get("GEMINI_PRAYER_TRANSLATION_MODEL")
     prompt = _PROMPT.format(
@@ -99,9 +105,9 @@ async def translate_prayer_request(body: str) -> Optional[Tuple[str, Dict[str, s
     try:
         from google import genai
         from google.genai import types
-    except ImportError:
+    except ImportError as exc:
         logger.exception("google-genai is not installed")
-        return None
+        raise TransientPrayerTranslationError("google-genai is not installed") from exc
 
     try:
         client = genai.Client(api_key=api_key)
@@ -115,9 +121,15 @@ async def translate_prayer_request(body: str) -> Optional[Tuple[str, Dict[str, s
         )
         raw = (response.text or "").strip()
         if not raw:
-            return None
+            raise TransientPrayerTranslationError("empty Gemini response")
         payload = json.loads(raw)
-        return _parse_prayer_translation_payload(payload)
-    except Exception:
+    except TransientPrayerTranslationError:
+        raise
+    except Exception as exc:
         logger.exception("Gemini prayer translation failed")
-        return None
+        raise TransientPrayerTranslationError("Gemini prayer translation failed") from exc
+
+    parsed = _parse_prayer_translation_payload(payload)
+    if parsed is None:
+        raise TransientPrayerTranslationError("invalid or incomplete Gemini payload")
+    return parsed
