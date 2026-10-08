@@ -34,6 +34,8 @@ Set at least:
 | `NOTIFICATION_DISPATCH_SECRET_TOKEN` | Shared secret sent as `X-Dispatch-Token` on internal backend calls |
 | `DATABASE_URL` | Worker-owned Postgres (reminders / notification tables only) |
 | `AUDIO_SQS_QUEUE_URL` | SQS queue for audio jobs produced by the backend |
+| `PRAYER_TRANSLATION_SQS_QUEUE_URL` | SQS queue for prayer request translation jobs produced by the backend |
+| `GEMINI_API_KEY` / `GEMINI_PRAYER_TRANSLATION_MODEL` | Gemini for prayer translations (also used by TTS and segment chat) |
 | `CHAT_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for chat message notification events produced by the backend |
 | `PRAYER_NOTIFICATION_SQS_QUEUE_URL` | SQS queue for prayer (`PRAYER_RECEIVED`) notification events produced by the backend |
 | `CACHE_CONNECTION_STRING` | Redis URL used for chat notification per-device idempotency, and the segment chat source cache and rate limit |
@@ -41,7 +43,8 @@ Set at least:
 | `OPENPECHA_LIBRARY_URL` | OpenPecha library API that segment AI chat reads segments and related texts from (default `https://library.webuddhist.com`) |
 
 The worker talks to the backend for audio job status, generation payloads
-(day/subtask content), and persisting generation results. Do **not** point
+(day/subtask content), persisting generation results, and prayer translation
+payload/result exchange. Do **not** point
 `DATABASE_URL` at the backend database for plan/subtask data.
 
 ## Database Setup (worker-owned DB only)
