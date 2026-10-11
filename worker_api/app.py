@@ -3,7 +3,7 @@ from starlette import status
 from fastapi.middleware.cors import CORSMiddleware
 
 from worker_api.middleware.request_observability import RequestObservabilityMiddleware
-from worker_api.db.mongo_database import lifespan
+from worker_api.db.lifespan import lifespan
 from worker_api.audio.audio_views import audio_router
 from worker_api.notifications.internal_views import internal_router
 from worker_api.notifications.reminder_views import reminder_router

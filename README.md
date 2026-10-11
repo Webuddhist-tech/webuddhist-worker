@@ -49,7 +49,7 @@ payload/result exchange. Do **not** point
 
 ## Database Setup (worker-owned DB only)
 
-Start local infra from the backend repo if needed (Postgres/Mongo/Redis/etc.),
+Start local infra from the backend repo if needed (Postgres/Redis/etc.),
 then apply **worker** migrations against the worker database:
 
 ```sh
@@ -125,7 +125,7 @@ Alembic is used for handling **worker-owned** database migrations:
 ## Shared Infrastructure
 
 This worker can reuse the same local Docker services as `WeBuddhist-Backend`
-(Postgres, MongoDB, Redis, Elasticsearch), but:
+(Postgres, Redis, Elasticsearch), but:
 
 - Backend plan/content data is fetched and updated through backend internal APIs
 - Worker Postgres should only hold worker-owned tables
@@ -133,7 +133,6 @@ This worker can reuse the same local Docker services as `WeBuddhist-Backend`
 Typical local ports:
 
 - PostgreSQL: 5434
-- MongoDB: 27017
 - Redis/Dragonfly: 6379
 - Elasticsearch: 9200
 

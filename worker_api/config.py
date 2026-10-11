@@ -5,8 +5,6 @@ import re
 
 DEFAULTS = dict(
     DATABASE_URL="postgresql://admin:pechaAdmin@localhost:5434/pecha-worker",
-    MONGO_CONNECTION_STRING="mongodb://admin:pechaAdmin@localhost:27017/pecha?authSource=admin",
-    MONGO_DATABASE_NAME="webuddhist",
 
     AWS_ACCESS_KEY="",
     AWS_SECRET_KEY="",
