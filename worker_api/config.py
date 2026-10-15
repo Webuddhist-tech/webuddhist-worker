@@ -5,8 +5,6 @@ import re
 
 DEFAULTS = dict(
     DATABASE_URL="postgresql://admin:pechaAdmin@localhost:5434/pecha-worker",
-    MONGO_CONNECTION_STRING="mongodb://admin:pechaAdmin@localhost:27017/pecha?authSource=admin",
-    MONGO_DATABASE_NAME="webuddhist",
 
     AWS_ACCESS_KEY="",
     AWS_SECRET_KEY="",
@@ -65,6 +63,15 @@ DEFAULTS = dict(
     AUDIO_SQS_VISIBILITY_TIMEOUT_SECONDS=900,
     AUDIO_SQS_MAX_MESSAGES=1,
     AUDIO_SQS_POLL_ENABLED="true",
+
+    # Prayer request translation SQS consumer (backend producer → worker consumer)
+    PRAYER_TRANSLATION_ENABLED="true",
+    GEMINI_PRAYER_TRANSLATION_MODEL="gemini-3.8-flash",
+    PRAYER_TRANSLATION_SQS_QUEUE_URL="",
+    PRAYER_TRANSLATION_SQS_WAIT_TIME_SECONDS=20,
+    PRAYER_TRANSLATION_SQS_VISIBILITY_TIMEOUT_SECONDS=300,
+    PRAYER_TRANSLATION_SQS_MAX_MESSAGES=5,
+    PRAYER_TRANSLATION_SQS_POLL_ENABLED="true",
 
     # Chat notification SQS consumer (backend producer → worker consumer)
     CHAT_NOTIFICATION_SQS_QUEUE_URL="",
