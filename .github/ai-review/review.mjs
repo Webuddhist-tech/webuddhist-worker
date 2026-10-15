@@ -1,6 +1,9 @@
-// AI PR reviewer: reviews the PR diff with Claude, posts a scored summary
-// comment + inline findings, and resolves findings fixed by later pushes.
-// State (open findings ↔ comment ids) lives hidden inside the summary comment.
+// AI PR reviewer: reviews the PR diff with Claude and, on every push, posts a
+// new PR review whose body is the scored summary and whose inline comments are
+// the new findings, so the score sits above the issues it is about. Findings
+// fixed by later pushes, or whose thread a human resolved, are closed.
+// State (open findings) lives hidden in the latest summary; older summaries
+// are collapsed to a link to the latest one.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -10,8 +13,12 @@ import Anthropic from "@anthropic-ai/sdk";
 const env = process.env;
 const [OWNER, REPO_NAME] = (env.REPO || "").split("/");
 const PR = Number(env.PR_NUMBER);
-const HEAD = env.HEAD_SHA;
-const BASE = env.BASE_SHA;
+// Refreshed from the live PR in syncToCurrentHead(): a re-run replays the
+// original event, whose SHAs and text may be stale.
+let HEAD = env.HEAD_SHA;
+let BASE = env.BASE_SHA;
+let PR_TITLE = env.PR_TITLE || "";
+let PR_BODY = env.PR_BODY || "";
 const MODEL = env.AI_REVIEW_MODEL || "claude-sonnet-5-5";
 const EFFORT = env.AI_REVIEW_EFFORT || "medium";
 const ON_FIXED = env.AI_REVIEW_ON_FIXED === "delete" ? "delete" : "resolve";
@@ -48,6 +55,20 @@ const SEVERITY_ICON = {
 };
 const SEVERITY_CAP = { critical: 1, high: 2, medium: 3, low: 4, nit: 5 };
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "nit"];
+
+// Fields of a finding kept in the hidden state.
+const FINDING_KEYS = [
+  "id",
+  "file",
+  "line",
+  "severity",
+  "category",
+  "title",
+  "body",
+  "suggestion",
+  "fix_prompt",
+];
+const pick = (f) => Object.fromEntries(FINDING_KEYS.map((k) => [k, f[k]]));
 
 // ---------- GitHub API ----------
 
@@ -240,7 +261,8 @@ Rules:
 - "line" must be a line number in the NEW version of the file, preferably a changed (+) line; 0 if file-level.
 - "fix_prompt": a self-contained instruction an AI coding agent can paste and execute: name the file, the location, the problem and the exact change to make.
 - Severity: critical = security hole/secret leak/data loss/crash on main path; high = clear bug; medium = likely bug or significant design problem; low = minor issue; nit = optional improvement.
-- Previous findings: for each, decide "fixed" (no longer present), "open" (still present — give its current file/line), or "dismissed" (a human reply gives a valid reason, or it was a false positive). Do not re-report an open previous finding as a new finding.
+- Previous findings: return a decision for every id: "fixed" (no longer present), "open" (still present — give its current file/line), or "dismissed" (a human reply gives a valid reason, or it was a false positive). Do not re-report an open previous finding as a new finding.
+- Findings under <resolved_by_reviewer> were closed by a human. Do not report them again.
 - score: 5 = no issues, 4 = only minor/nits, 3 = medium issues, 2 = a real bug, 1 = critical/security problem.
 - verdict: one sentence.
 - affected: up to 5 short bullets naming areas/modules impacted by the change (empty if trivial).
@@ -348,7 +370,7 @@ function renderFinding(f, id) {
     f.body,
     f.suggestion ? `\n**Better:** ${f.suggestion}` : "",
     "",
-    "<details><summary>🤖 Fix prompt</summary>",
+    "<details><summary>Fix prompt</summary>",
     "",
     "```text",
     f.fix_prompt.replace(/```/g, "'''"),
@@ -359,18 +381,24 @@ function renderFinding(f, id) {
   ].join("\n");
 }
 
+// `open` findings carry `inline: true` when they have a comment on the diff,
+// plus `comment_url` once that comment exists.
 function renderSummary(
   { score, verdict, affected, open, resolvedNow, skipped, usage, error },
   state,
 ) {
   const stars = "★".repeat(score) + "☆".repeat(5 - score);
-  const out = [SUMMARY_MARK, `## 🤖 AI Review — ${stars} **${score}/5**`, ""];
+  const out = [
+    SUMMARY_MARK,
+    `## AI Review — ${stars} **${score}/5** for \`${HEAD.slice(0, 7)}\``,
+    "",
+  ];
   if (error)
     out.push(
       `> ⚠️ Latest review failed: ${error}. Showing previous results.`,
       "",
     );
-  out.push(`> ${verdict}`, "");
+  if (verdict) out.push(`> ${verdict}`, "");
 
   if (open.length) {
     out.push("| | Issue | Where |", "|---|---|---|");
@@ -386,7 +414,7 @@ function renderSummary(
     out.push("✅ No open issues.", "");
   }
 
-  const general = open.filter((f) => !f.comment_id && f.body);
+  const general = open.filter((f) => !f.inline && f.body);
   if (general.length) {
     out.push(
       "<details><summary>Details for issues outside the diff</summary>",
@@ -414,7 +442,7 @@ function renderSummary(
   const tokens = usage
     ? ` · ${usage.input_tokens + (usage.cache_read_input_tokens || 0)} in / ${usage.output_tokens} out tokens`
     : "";
-  out.push(`<sub>${MODEL} · \`${HEAD.slice(0, 7)}\`${tokens}</sub>`);
+  out.push(`<sub>${MODEL}${tokens}</sub>`);
   out.push(
     `<!-- ai-review:state ${Buffer.from(JSON.stringify(state)).toString("base64")} -->`,
   );
@@ -429,6 +457,17 @@ const sortBySeverity = (a) =>
       SEVERITY_ORDER.indexOf(x.severity) - SEVERITY_ORDER.indexOf(y.severity),
   );
 
+function readState(body) {
+  const m = body?.match(STATE_RE);
+  try {
+    return m
+      ? JSON.parse(Buffer.from(m[1], "base64").toString("utf8"))
+      : { findings: [] };
+  } catch {
+    return { findings: [] };
+  }
+}
+
 // ---------- Main ----------
 
 async function main() {
@@ -437,32 +476,52 @@ async function main() {
     return;
   }
 
-  // Existing summary comment + state
+  if (!DRY_RUN) {
+    const pr = await syncToCurrentHead();
+    if (pr.state !== "open" || pr.draft) {
+      console.log("PR is closed or a draft — skipping AI review.");
+      return;
+    }
+  }
+
+  // Previous summaries: PR reviews, or an issue comment (older versions).
+  const reviews = DRY_RUN ? [] : await ghAll(`${repoPath}/pulls/${PR}/reviews`);
   const issueComments = DRY_RUN
     ? []
     : await ghAll(`${repoPath}/issues/${PR}/comments`);
-  const summary = issueComments.find((c) => c.body?.includes(SUMMARY_MARK));
-  const state = (() => {
-    const m = summary?.body.match(STATE_RE);
-    try {
-      return m
-        ? JSON.parse(Buffer.from(m[1], "base64").toString("utf8"))
-        : { findings: [] };
-    } catch {
-      return { findings: [] };
-    }
-  })();
+  const liveSummaries = [
+    ...issueComments.map((c) => ({ ...c, kind: "comment" })),
+    ...reviews.map((r) => ({ ...r, kind: "review" })),
+  ].filter((s) => s.body?.includes(SUMMARY_MARK) && STATE_RE.test(s.body));
+  // Reviews are listed oldest first; the last one with state is the latest.
+  const state = readState(liveSummaries.at(-1)?.body);
 
   // Existing inline comments (to get current line + human replies)
   const reviewComments = DRY_RUN
     ? []
     : await ghAll(`${repoPath}/pulls/${PR}/comments`);
-  const byId = new Map(reviewComments.map((c) => [c.id, c]));
+  const commentFor = (f) =>
+    reviewComments.find(
+      (c) => !c.in_reply_to_id && c.body?.includes(findingMark(f.id)),
+    );
   const replies = (id) =>
     reviewComments
       .filter((c) => c.in_reply_to_id === id)
       .map((c) => `${c.user.login}: ${c.body}`)
       .slice(-5);
+  const threads = DRY_RUN
+    ? new Map()
+    : await reviewThreads().catch(() => new Map());
+
+  // A thread on an open finding can only have been resolved by a human (this
+  // script resolves threads only for findings it drops), so drop those too.
+  const resolvedByReviewer = [];
+  const carried = [];
+  for (const f of state.findings) {
+    const c = commentFor(f);
+    if (c && threads.get(c.id)?.isResolved) resolvedByReviewer.push(f);
+    else carried.push(f);
+  }
 
   // Build the diff
   const files = changedFiles();
@@ -519,25 +578,31 @@ async function main() {
     )
     .join("\n");
 
-  const previous = state.findings.map((f) => ({
-    id: f.id,
-    file: f.file,
-    line: f.line,
-    severity: f.severity,
-    title: f.title,
-    body: f.body,
-    human_replies: f.comment_id ? replies(f.comment_id) : [],
-  }));
+  const previous = carried.map((f) => {
+    const c = commentFor(f);
+    return {
+      id: f.id,
+      file: f.file,
+      line: f.line,
+      severity: f.severity,
+      title: f.title,
+      body: f.body,
+      human_replies: c ? replies(c.id) : [],
+    };
+  });
 
   const userContent = [
     guidelines,
-    `<pr title="${esc(env.PR_TITLE || "")}">\n${(env.PR_BODY || "").slice(0, 4000)}\n</pr>`,
+    `<pr title="${esc(PR_TITLE)}">\n${PR_BODY.slice(0, 4000)}\n</pr>`,
     `<context>\n${context.join("\n")}\n</context>`,
     `<diff>\n${Object.values(diffs).join("\n")}\n</diff>`,
     secretHits.length
       ? `<secret_scanner_hits>\n${secretHits.map((h) => `${h.file}:${h.line} ${h.kind}`).join("\n")}\n</secret_scanner_hits>`
       : "",
     `<previous_findings>\n${JSON.stringify(previous, null, 1)}\n</previous_findings>`,
+    resolvedByReviewer.length
+      ? `<resolved_by_reviewer>\n${resolvedByReviewer.map((f) => `${f.file}:${f.line} ${f.title}`).join("\n")}\n</resolved_by_reviewer>`
+      : "",
     skipped.length ? `<not_shown>${skipped.join(", ")}</not_shown>` : "",
     "Review this PR now.",
   ]
@@ -551,149 +616,171 @@ async function main() {
     return;
   }
 
-  let result, usage;
+  let result, usage, error;
   try {
     ({ result, usage } = await runModel(userContent));
   } catch (e) {
     console.error(e);
-    // Keep the old state, flag the failure on the summary.
-    const prevScore = state.score ?? 3;
-    const body = renderSummary(
-      {
-        score: prevScore,
-        verdict: state.verdict ?? "",
-        affected: [],
-        open: state.findings,
-        error: e.message.slice(0, 200),
-      },
-      state,
-    );
-    if (summary)
-      await gh("PATCH", `${repoPath}/issues/comments/${summary.id}`, { body });
+    error = e.message.slice(0, 200);
     process.exitCode = 1;
-    return;
   }
 
   // ----- Reconcile previous findings -----
-  const decisions = new Map(result.previous.map((p) => [p.id, p]));
-  const threads = await threadIdsByComment().catch(() => new Map());
-  const stillOpen = [];
-  let resolvedNow = 0;
-  const toPost = [];
+  const stillOpen = []; // keep their existing inline comment, if any
+  const toPost = []; // need a new inline comment (or a summary entry)
+  let resolvedNow = resolvedByReviewer.length;
 
-  for (const f of state.findings) {
-    const d = decisions.get(f.id) ?? {
-      status: "open",
-      file: f.file,
-      line: f.line,
-    };
-    const comment = f.comment_id ? byId.get(f.comment_id) : null;
-
-    if (d.status === "fixed" || d.status === "dismissed") {
-      resolvedNow++;
-      if (comment) await closeComment(comment, f, d, threads.get(comment.id));
-      continue;
+  if (error) {
+    // Keep the previous findings as they are.
+    for (const f of carried) {
+      const c = commentFor(f);
+      stillOpen.push({ ...pick(f), inline: !!c, comment_url: c?.html_url });
     }
+  } else {
+    const decisions = new Map(result.previous.map((p) => [p.id, p]));
+    for (const f of carried) {
+      const d = decisions.get(f.id) ?? {
+        status: "open",
+        file: f.file,
+        line: f.line,
+      };
+      const comment = commentFor(f);
 
-    // Still open. Re-anchor if the comment is gone/outdated and the new line is commentable.
-    const next = { ...f, file: d.file || f.file, line: d.line ?? f.line };
-    const outdated = !comment || comment.line == null;
-    if (outdated && commentable[next.file]?.has(next.line)) {
-      if (comment)
-        await gh("DELETE", `${repoPath}/pulls/comments/${comment.id}`).catch(
-          () => {},
-        );
-      toPost.push(next);
-    } else {
-      if (comment) next.comment_url = comment.html_url;
-      else next.comment_id = null;
-      stillOpen.push(next);
-    }
-  }
-
-  // ----- New findings -----
-  for (const f of result.findings) {
-    toPost.push({ ...f, id: randomUUID().slice(0, 8) });
-  }
-
-  // Post inline where possible, otherwise keep in summary.
-  for (const f of toPost) {
-    if (commentable[f.file]?.has(f.line)) {
-      try {
-        const c = await gh("POST", `${repoPath}/pulls/${PR}/comments`, {
-          commit_id: HEAD,
-          path: f.file,
-          line: f.line,
-          side: "RIGHT",
-          body: renderFinding(f, f.id),
-        });
-        stillOpen.push({ ...f, comment_id: c.id, comment_url: c.html_url });
+      if (d.status === "fixed" || d.status === "dismissed") {
+        resolvedNow++;
+        if (comment)
+          await closeComment(comment, f, d, threads.get(comment.id)?.id);
         continue;
-      } catch (e) {
-        console.warn(
-          `inline comment failed for ${f.file}:${f.line}: ${e.message}`,
-        );
+      }
+
+      // Still open. Re-anchor if the comment is gone/outdated and the new line is commentable.
+      const next = { ...pick(f), file: d.file || f.file, line: d.line ?? f.line };
+      const outdated = !comment || comment.line == null;
+      if (outdated && commentable[next.file]?.has(next.line)) {
+        if (comment)
+          await gh("DELETE", `${repoPath}/pulls/comments/${comment.id}`).catch(
+            () => {},
+          );
+        toPost.push(next);
+      } else {
+        stillOpen.push({
+          ...next,
+          inline: !!comment,
+          comment_url: comment?.html_url,
+        });
       }
     }
-    stillOpen.push({ ...f, comment_id: null });
+
+    for (const f of result.findings) {
+      toPost.push({ ...pick(f), id: randomUUID().slice(0, 8) });
+    }
   }
 
+  for (const f of toPost) f.inline = !!commentable[f.file]?.has(f.line);
+  const open = [...stillOpen, ...toPost];
+
   // Score: model score, capped by worst open severity.
-  const worstCap = Math.min(
-    5,
-    ...stillOpen.map((f) => SEVERITY_CAP[f.severity] ?? 5),
-  );
-  const score = Math.max(1, Math.min(result.score, worstCap));
+  let score = state.score ?? 3;
+  if (!error) {
+    const worstCap = Math.min(
+      5,
+      ...open.map((f) => SEVERITY_CAP[f.severity] ?? 5),
+    );
+    score = Math.max(1, Math.min(result.score, worstCap));
+  }
+  const verdict = error ? (state.verdict ?? "") : result.verdict;
 
-  const newState = {
-    score,
-    verdict: result.verdict,
-    findings: stillOpen.map(
-      ({
-        id,
-        file,
-        line,
-        severity,
-        category,
-        title,
-        body,
-        suggestion,
-        fix_prompt,
-        comment_id,
-      }) => ({
-        id,
-        file,
-        line,
-        severity,
-        category,
-        title,
-        body,
-        suggestion,
-        fix_prompt,
-        comment_id,
-      }),
-    ),
-  };
-  const body = renderSummary(
-    {
-      score,
-      verdict: result.verdict,
-      affected: result.affected,
-      open: stillOpen,
-      resolvedNow,
-      skipped,
-      usage,
-    },
-    newState,
-  );
+  const render = () =>
+    renderSummary(
+      {
+        score,
+        verdict,
+        affected: result?.affected,
+        open,
+        resolvedNow,
+        skipped,
+        usage,
+        error,
+      },
+      { score, verdict, sha: HEAD, findings: open.map(pick) },
+    );
 
-  if (summary)
-    await gh("PATCH", `${repoPath}/issues/comments/${summary.id}`, { body });
-  else await gh("POST", `${repoPath}/issues/${PR}/comments`, { body });
+  // One review per push: the summary is its body and the new findings are its
+  // inline comments, so GitHub shows the score above them.
+  const inline = toPost.filter((f) => f.inline);
+  let review;
+  try {
+    review = await postReview(render(), inline);
+  } catch (e) {
+    if (!inline.length) throw e;
+    // A line GitHub rejects fails the whole review; fall back to the summary.
+    console.warn(`inline comments rejected, posting summary only: ${e.message}`);
+    for (const f of inline) f.inline = false;
+    review = await postReview(render(), []);
+  }
+
+  // Link the table rows to the new comments.
+  if (inline.some((f) => f.inline)) {
+    const posted = await ghAll(
+      `${repoPath}/pulls/${PR}/reviews/${review.id}/comments`,
+    );
+    for (const f of inline)
+      f.comment_url = posted.find((c) =>
+        c.body?.includes(findingMark(f.id)),
+      )?.html_url;
+    await gh("PUT", `${repoPath}/pulls/${PR}/reviews/${review.id}`, {
+      body: render(),
+    }).catch((e) => console.warn(`summary link update failed: ${e.message}`));
+  }
+
+  // Collapse older summaries so only the latest score shows.
+  const superseded = `<sub>Superseded by the [latest AI review](${review.html_url}).</sub>`;
+  for (const s of liveSummaries) {
+    const path =
+      s.kind === "review"
+        ? `${repoPath}/pulls/${PR}/reviews/${s.id}`
+        : `${repoPath}/issues/comments/${s.id}`;
+    await gh(s.kind === "review" ? "PUT" : "PATCH", path, {
+      body: superseded,
+    }).catch((e) => console.warn(`collapse old summary failed: ${e.message}`));
+  }
 
   console.log(
-    `Score ${score}/5 · ${stillOpen.length} open · ${resolvedNow} resolved · ${result.findings.length} new`,
+    `Score ${score}/5 · ${open.length} open · ${resolvedNow} resolved · ${toPost.length} posted`,
   );
+}
+
+// Re-runs replay the original event, so its SHAs can be stale; review what
+// the PR points at now.
+async function syncToCurrentHead() {
+  const pr = await gh("GET", `${repoPath}/pulls/${PR}`);
+  if (pr.state !== "open" || pr.draft) return pr;
+  HEAD = pr.head.sha;
+  BASE = pr.base.sha;
+  PR_TITLE = pr.title ?? "";
+  PR_BODY = pr.body ?? "";
+  for (const sha of [HEAD, BASE]) {
+    try {
+      git("cat-file", "-e", `${sha}^{commit}`);
+    } catch {
+      git("fetch", "--no-tags", "origin", sha);
+    }
+  }
+  return pr;
+}
+
+function postReview(body, findings) {
+  return gh("POST", `${repoPath}/pulls/${PR}/reviews`, {
+    commit_id: HEAD,
+    event: "COMMENT",
+    body,
+    comments: findings.map((f) => ({
+      path: f.file,
+      line: f.line,
+      side: "RIGHT",
+      body: renderFinding(f, f.id),
+    })),
+  });
 }
 
 async function closeComment(comment, f, d, threadId) {
@@ -726,7 +813,8 @@ async function closeComment(comment, f, d, threadId) {
   }
 }
 
-async function threadIdsByComment() {
+// First comment's database id → { id, isResolved } of its thread.
+async function reviewThreads() {
   const map = new Map();
   let after = null;
   for (;;) {
@@ -759,7 +847,8 @@ async function threadIdsByComment() {
     const t = data.repository.pullRequest.reviewThreads;
     for (const n of t.nodes) {
       const first = n.comments.nodes[0];
-      if (first && !n.isResolved) map.set(first.databaseId, n.id);
+      if (first)
+        map.set(first.databaseId, { id: n.id, isResolved: n.isResolved });
     }
     if (!t.pageInfo.hasNextPage) return map;
     after = t.pageInfo.endCursor;

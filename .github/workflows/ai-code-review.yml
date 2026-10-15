@@ -1,6 +1,9 @@
 # AI code review on every push to a PR branch.
-# Posts a scored summary comment + inline findings (each with a fix prompt),
-# and on later pushes resolves findings that were fixed.
+# Each push gets a new PR review: the score and summary on top, the new
+# findings (each with a fix prompt) as inline comments below it. Findings that
+# were fixed, or whose thread was resolved by hand, are closed, and older
+# summaries collapse to a link to the latest. Re-running a job reviews the
+# branch's current head, not the commit that originally triggered it.
 #
 # Setup:  Settings → Secrets → Actions → add ANTHROPIC_API_KEY
 # Tuning: Settings → Variables → Actions (optional)
@@ -31,7 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # Branch tip, so re-runs pick up the latest push (forks are skipped above).
+          ref: ${{ github.head_ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
