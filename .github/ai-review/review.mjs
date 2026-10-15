@@ -28,6 +28,7 @@ const DRY_RUN = env.AI_REVIEW_DRY_RUN === "1";
 const SUMMARY_MARK = "<!-- ai-review:summary -->";
 const STATE_RE = /<!-- ai-review:state ([A-Za-z0-9+/=]+) -->/;
 const findingMark = (id) => `<!-- ai-review:finding ${id} -->`;
+const FINDING_ID_RE = /<!-- ai-review:finding (\S+) -->/;
 
 const MAX_DIFF_CHARS = 400_000;
 const MAX_FILE_CHARS = 30_000;
@@ -629,6 +630,7 @@ async function main() {
   const stillOpen = []; // keep their existing inline comment, if any
   const toPost = []; // need a new inline comment (or a summary entry)
   let resolvedNow = resolvedByReviewer.length;
+  const deleted = new Set(); // comment ids removed this run
 
   if (error) {
     // Keep the previous findings as they are.
@@ -648,8 +650,10 @@ async function main() {
 
       if (d.status === "fixed" || d.status === "dismissed") {
         resolvedNow++;
-        if (comment)
-          await closeComment(comment, f, d, threads.get(comment.id)?.id);
+        if (comment) {
+          await closeComment(comment, f, d);
+          if (ON_FIXED === "delete") deleted.add(comment.id);
+        }
         continue;
       }
 
@@ -745,6 +749,22 @@ async function main() {
     }).catch((e) => console.warn(`collapse old summary failed: ${e.message}`));
   }
 
+  // Collapse every finding that is no longer open, including ones closed in
+  // earlier runs: resolve its thread and hide the comment as resolved.
+  const openIds = new Set(open.map((f) => f.id));
+  for (const c of reviewComments) {
+    const id = c.body?.match(FINDING_ID_RE)?.[1];
+    if (
+      !id ||
+      c.in_reply_to_id ||
+      c.user?.type !== "Bot" ||
+      openIds.has(id) ||
+      deleted.has(c.id)
+    )
+      continue;
+    await collapseThread(threads.get(c.id));
+  }
+
   console.log(
     `Score ${score}/5 · ${open.length} open · ${resolvedNow} resolved · ${toPost.length} posted`,
   );
@@ -783,7 +803,8 @@ function postReview(body, findings) {
   });
 }
 
-async function closeComment(comment, f, d, threadId) {
+// Labels a closed finding; main() then collapses its thread.
+async function closeComment(comment, f, d) {
   if (ON_FIXED === "delete") {
     await gh("DELETE", `${repoPath}/pulls/comments/${comment.id}`).catch((e) =>
       console.warn(e.message),
@@ -797,7 +818,11 @@ async function closeComment(comment, f, d, threadId) {
   await gh("PATCH", `${repoPath}/pulls/comments/${comment.id}`, {
     body: `${label} — ~~${f.title}~~\n\n${findingMark(f.id)}`,
   }).catch((e) => console.warn(e.message));
-  if (threadId) {
+}
+
+async function collapseThread(thread) {
+  if (!thread) return;
+  if (!thread.isResolved)
     await graphql(
       `
         mutation ($id: ID!) {
@@ -808,12 +833,25 @@ async function closeComment(comment, f, d, threadId) {
           }
         }
       `,
-      { id: threadId },
+      { id: thread.id },
     ).catch((e) => console.warn(`resolve thread failed: ${e.message}`));
-  }
+  if (!thread.isMinimized)
+    await graphql(
+      `
+        mutation ($id: ID!) {
+          minimizeComment(input: { subjectId: $id, classifier: RESOLVED }) {
+            minimizedComment {
+              isMinimized
+            }
+          }
+        }
+      `,
+      { id: thread.commentNodeId },
+    ).catch((e) => console.warn(`hide comment failed: ${e.message}`));
 }
 
-// First comment's database id → { id, isResolved } of its thread.
+// First comment's database id → its thread { id, isResolved } and that
+// comment's { commentNodeId, isMinimized }.
 async function reviewThreads() {
   const map = new Map();
   let after = null;
@@ -833,7 +871,9 @@ async function reviewThreads() {
                   isResolved
                   comments(first: 1) {
                     nodes {
+                      id
                       databaseId
+                      isMinimized
                     }
                   }
                 }
@@ -848,7 +888,12 @@ async function reviewThreads() {
     for (const n of t.nodes) {
       const first = n.comments.nodes[0];
       if (first)
-        map.set(first.databaseId, { id: n.id, isResolved: n.isResolved });
+        map.set(first.databaseId, {
+          id: n.id,
+          isResolved: n.isResolved,
+          commentNodeId: first.id,
+          isMinimized: first.isMinimized,
+        });
     }
     if (!t.pageInfo.hasNextPage) return map;
     after = t.pageInfo.endCursor;
