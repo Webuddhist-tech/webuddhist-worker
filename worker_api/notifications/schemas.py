@@ -358,3 +358,27 @@ class DispatchVerseOfDayNotificationsResponse(BaseModel):
     sent: int
     failed: int
     skipped: int
+
+
+class VerseOfDayCommentPushDevice(BaseModel):
+    id: UUID
+    token: str
+    platform: str
+
+
+class VerseOfDayCommentRecipient(BaseModel):
+    user_id: UUID
+    title: str
+    body: str
+    push_devices: list[VerseOfDayCommentPushDevice]
+
+
+class VerseOfDayCommentNotificationTargetsResponse(BaseModel):
+    window_id: UUID
+    verse_id: UUID
+    image_url: str | None = None
+    recipients: list[VerseOfDayCommentRecipient]
+    skip: int
+    limit: int
+    total: int
+    has_more: bool

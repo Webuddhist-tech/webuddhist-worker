@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from worker_api.config import get, get_bool, get_int
 from worker_api.notifications.chat_sqs_client import (
     PRAYER_RECEIVED_EVENT,
+    VERSE_OF_DAY_COMMENTS_EVENT,
     delete_chat_notification_message,
     is_chat_notification_sqs_poll_enabled,
     parse_chat_notification_message_body,
@@ -31,6 +32,10 @@ from worker_api.notifications.services.push.fcm_client import (
 from worker_api.notifications.services.prayer_notification_service import (
     TransientPrayerNotificationError,
     process_prayer_event,
+)
+from worker_api.notifications.services.verse_of_day_comment_notification_service import (
+    TransientVerseCommentNotificationError,
+    process_verse_of_day_comments_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,6 +190,17 @@ async def process_chat_notification_message(message: Dict[str, Any]) -> None:
                 delete_message=delete_chat_notification_message,
             )
         except TransientPrayerNotificationError as exc:
+            raise TransientChatNotificationError(str(exc)) from exc
+        return
+
+    if body.get("event_type") == VERSE_OF_DAY_COMMENTS_EVENT:
+        try:
+            await process_verse_of_day_comments_event(
+                body=body,
+                receipt_handle=receipt_handle,
+                delete_message=delete_chat_notification_message,
+            )
+        except TransientVerseCommentNotificationError as exc:
             raise TransientChatNotificationError(str(exc)) from exc
         return
 
