@@ -176,6 +176,10 @@ class ChatPushDeviceTarget(BaseModel):
 class ChatNotificationRecipient(BaseModel):
     user_id: UUID
     push_devices: list[ChatPushDeviceTarget]
+    # This recipient's own copy, in their language (prayer requests). None:
+    # send the response's title and body.
+    title: str | None = None
+    body: str | None = None
 
 
 class ChatNotificationTargetsResponse(BaseModel):

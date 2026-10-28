@@ -112,8 +112,11 @@ async def _send_to_device(
     targets: ChatNotificationTargetsResponse,
     device: ChatPushDeviceTarget,
     semaphore: asyncio.Semaphore,
+    title: str | None = None,
+    body: str | None = None,
 ) -> str:
-    """Return sent | skipped | permanent_failed | transient_failed."""
+    """Return sent | skipped | permanent_failed | transient_failed. `title` and
+    `body` are the recipient's own copy when the backend sent one."""
     async with semaphore:
         if not is_push_configured(device.platform):
             return "skipped"
@@ -129,8 +132,8 @@ async def _send_to_device(
                 sender_id=targets.sender_id,
                 chat_kind=targets.chat_kind,
                 group_id=targets.group_id,
-                title=targets.title,
-                body=targets.body,
+                title=title or targets.title,
+                body=body or targets.body,
                 message_type=targets.message_type,
                 image_url=targets.image_url,
             )
@@ -217,8 +220,9 @@ async def process_chat_message_event(
             return
         raise TransientChatNotificationError(str(exc.detail)) from exc
 
+    # Each device goes with its recipient, whose copy may be in their language.
     devices = [
-        device
+        (recipient, device)
         for recipient in targets.recipients
         for device in recipient.push_devices
     ]
@@ -232,8 +236,14 @@ async def process_chat_message_event(
     semaphore = asyncio.Semaphore(concurrency)
     results = await asyncio.gather(
         *[
-            _send_to_device(targets=targets, device=device, semaphore=semaphore)
-            for device in devices
+            _send_to_device(
+                targets=targets,
+                device=device,
+                semaphore=semaphore,
+                title=recipient.title,
+                body=recipient.body,
+            )
+            for recipient, device in devices
         ]
     )
 
