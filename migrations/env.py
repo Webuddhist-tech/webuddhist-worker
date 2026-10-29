@@ -7,6 +7,13 @@ from alembic import context
 from worker_api.db.database import Base
 
 from worker_api.notifications.models.reminder_models import UpcomingReminder
+from worker_api.recommendations.models import (  # noqa: F401
+    RecDismissal,
+    RecExposure,
+    RecItem,
+    RecMembership,
+    RecProcessedEvent,
+)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
