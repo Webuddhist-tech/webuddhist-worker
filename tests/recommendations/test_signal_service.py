@@ -46,6 +46,33 @@ def test_events_apply_in_time_order_within_a_batch(db_session):
     assert db_session.query(RecMembership).count() == 0
 
 
+def test_stale_join_from_a_later_poll_does_not_undo_a_leave(db_session):
+    user, space = uuid4(), uuid4()
+    apply_events(db_session, [_event(user, "JOIN", item_id=space)])
+    apply_events(db_session, [_event(user, "LEAVE", item_id=space, at=NOW + timedelta(seconds=5))])
+    apply_events(db_session, [_event(user, "JOIN", item_id=space, at=NOW + timedelta(seconds=1))])
+    assert db_session.query(RecMembership).count() == 0
+
+    apply_events(db_session, [_event(user, "JOIN", item_id=space, at=NOW + timedelta(seconds=9))])
+    assert db_session.query(RecMembership).count() == 1
+
+
+def test_exposure_counts_increment_existing_rows(db_session):
+    user, space = uuid4(), uuid4()
+    apply_events(db_session, [_event(user, "IMPRESSION", item_id=space)])
+    apply_events(
+        db_session,
+        [
+            _event(user, "IMPRESSION", item_id=space, at=NOW + timedelta(minutes=1)),
+            _event(user, "CLICK", item_id=space, at=NOW - timedelta(minutes=1)),
+        ],
+    )
+    db_session.expire_all()
+    exposure = db_session.query(RecExposure).one()
+    assert (exposure.impressions, exposure.clicks) == (2, 1)
+    assert exposure.last_seen_at.replace(tzinfo=timezone.utc) == NOW + timedelta(minutes=1)
+
+
 def test_redelivered_events_are_applied_once(db_session):
     user, space = uuid4(), uuid4()
     impression = _event(user, "IMPRESSION", item_id=space)

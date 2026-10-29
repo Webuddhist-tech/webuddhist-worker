@@ -5,12 +5,17 @@ from typing import Dict, Iterable, List
 from uuid import UUID
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, union
 
 from worker_api.config import get, get_int
 from worker_api.db.database import SessionLocal
 from worker_api.recommendations.backend_client import put_user_recommendations
-from worker_api.recommendations.models import RecMembership
+from worker_api.recommendations.models import (
+    RecDismissal,
+    RecExposure,
+    RecMembership,
+    RecMembershipChange,
+)
 from worker_api.recommendations.schemas import ScoredItem
 from worker_api.recommendations.scoring import build_context, score_user
 
@@ -72,8 +77,19 @@ async def recompute_users(user_ids: Iterable[UUID]) -> int:
 
 
 def _all_user_ids() -> List[UUID]:
+    """Everyone who may hold suggestions. Membership changes keep removals,
+    so a user who left their last space is still refreshed."""
     with SessionLocal() as db:
-        return list(db.execute(select(RecMembership.user_id).distinct()).scalars())
+        return list(
+            db.execute(
+                union(
+                    *(
+                        select(model.user_id)
+                        for model in (RecMembership, RecMembershipChange, RecDismissal, RecExposure)
+                    )
+                )
+            ).scalars()
+        )
 
 
 async def recompute_all_users() -> int:

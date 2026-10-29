@@ -8,12 +8,20 @@ from worker_api.recommendations.models import (
     RecExposure,
     RecItem,
     RecMembership,
+    RecMembershipChange,
     RecProcessedEvent,
 )
 
 _TABLES = [
     model.__table__
-    for model in (RecDismissal, RecExposure, RecItem, RecMembership, RecProcessedEvent)
+    for model in (
+        RecDismissal,
+        RecExposure,
+        RecItem,
+        RecMembership,
+        RecMembershipChange,
+        RecProcessedEvent,
+    )
 ]
 
 

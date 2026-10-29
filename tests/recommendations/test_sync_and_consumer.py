@@ -1,5 +1,6 @@
+import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -10,15 +11,23 @@ from worker_api.recommendations.consumer import (
     TransientRecommendationEventsError,
     process_recommendation_events_messages,
     run_full_refresh,
+    run_recommendation_full_refresh_loop,
 )
-from worker_api.recommendations.models import RecItem, RecMembership
-from worker_api.recommendations.recompute_service import _push
-from worker_api.recommendations.schemas import CatalogItem, Membership, ScoredItem
+from worker_api.recommendations.models import RecItem, RecMembership, RecMembershipChange
+from worker_api.recommendations.recompute_service import _all_user_ids, _push
+from worker_api.recommendations.schemas import (
+    CatalogItem,
+    Membership,
+    RecommendationEvent,
+    ScoredItem,
+)
+from worker_api.recommendations.signal_service import apply_events
 from worker_api.recommendations.sqs_client import parse_recommendation_events_message_body
 from worker_api.recommendations.sync_service import replace_catalog, replace_memberships
 
 CONSUMER = "worker_api.recommendations.consumer"
 RECOMPUTE = "worker_api.recommendations.recompute_service"
+SNAPSHOT_AT = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
 
 
 def _body(events, event_type="RECOMMENDATION_EVENTS", version=1):
@@ -92,11 +101,69 @@ def test_replace_memberships_adds_and_removes(db_session):
         db_session,
         "SPACE",
         [Membership(user_id=user, item_id=kept), Membership(user_id=user, item_id=new)],
+        SNAPSHOT_AT,
     )
 
     assert (added, removed) == (1, 1)
     remaining = {m.item_id for m in db_session.query(RecMembership).all()}
     assert remaining == {kept, new}
+
+
+def _membership_event(user, item_id, action, at):
+    return RecommendationEvent(
+        event_id=uuid4(),
+        user_id=user,
+        item_type="SPACE",
+        item_id=item_id,
+        action=action,
+        occurred_at=at,
+    )
+
+
+def test_resync_keeps_memberships_changed_by_events_during_the_fetch(db_session):
+    user, joined, left = uuid4(), uuid4(), uuid4()
+    apply_events(db_session, [_membership_event(user, left, "JOIN", SNAPSHOT_AT - timedelta(days=1))])
+    # Both events land while the snapshot, which predates them, is being fetched.
+    apply_events(
+        db_session,
+        [
+            _membership_event(user, joined, "JOIN", SNAPSHOT_AT + timedelta(seconds=10)),
+            _membership_event(user, left, "LEAVE", SNAPSHOT_AT + timedelta(seconds=20)),
+        ],
+    )
+
+    added, removed = replace_memberships(
+        db_session, "SPACE", [Membership(user_id=user, item_id=left)], SNAPSHOT_AT
+    )
+
+    assert (added, removed) == (0, 0)
+    assert {m.item_id for m in db_session.query(RecMembership).all()} == {joined}
+
+
+def test_events_older_than_the_resync_do_not_undo_it(db_session):
+    user, space = uuid4(), uuid4()
+    replace_memberships(db_session, "SPACE", [Membership(user_id=user, item_id=space)], SNAPSHOT_AT)
+    apply_events(
+        db_session, [_membership_event(user, space, "LEAVE", SNAPSHOT_AT - timedelta(hours=1))]
+    )
+    assert db_session.query(RecMembership).count() == 1
+
+
+def test_users_who_left_everything_are_still_refreshed(db_session):
+    by_event, by_resync, space = uuid4(), uuid4(), uuid4()
+    db_session.add(RecMembership(user_id=by_resync, item_type="SPACE", item_id=space))
+    db_session.commit()
+    apply_events(db_session, [_membership_event(by_event, space, "JOIN", SNAPSHOT_AT)])
+    apply_events(
+        db_session,
+        [_membership_event(by_event, space, "LEAVE", SNAPSHOT_AT + timedelta(seconds=1))],
+    )
+    replace_memberships(db_session, "SPACE", [], SNAPSHOT_AT + timedelta(hours=1))
+
+    assert db_session.query(RecMembership).count() == 0
+    assert db_session.query(RecMembershipChange).count() == 2
+    with patch(f"{RECOMPUTE}.SessionLocal", return_value=db_session):
+        assert set(_all_user_ids()) == {by_event, by_resync}
 
 
 @pytest.mark.asyncio
@@ -142,6 +209,8 @@ async def test_full_refresh_skips_when_another_worker_holds_the_lock():
 async def test_full_refresh_resyncs_then_rescores():
     order = []
     with patch(f"{CONSUMER}._acquire_refresh_lock", return_value=True), patch(
+        f"{CONSUMER}._release_refresh_lock"
+    ), patch(
         f"{CONSUMER}.full_resync", new_callable=AsyncMock, side_effect=lambda: order.append("sync")
     ), patch(
         f"{CONSUMER}.recompute_all_users",
@@ -150,6 +219,39 @@ async def test_full_refresh_resyncs_then_rescores():
     ), patch(f"{CONSUMER}._purge_processed", return_value=0):
         assert await run_full_refresh() is True
     assert order == ["sync", "score"]
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_releases_its_own_lock_even_on_failure():
+    redis_client = MagicMock()
+    redis_client.set.return_value = True
+    with patch(f"{CONSUMER}._get_redis_client", return_value=redis_client), patch(
+        f"{CONSUMER}.full_resync", new_callable=AsyncMock, side_effect=RuntimeError("backend down")
+    ), pytest.raises(RuntimeError):
+        await run_full_refresh()
+
+    token = redis_client.set.call_args.args[1]
+    assert redis_client.eval.call_args.args[-1] == token
+
+
+@pytest.mark.asyncio
+async def test_failed_bootstrap_retries_soon_rather_than_after_an_interval():
+    stop = asyncio.Event()
+    calls = []
+
+    async def refresh():
+        calls.append(None)
+        if len(calls) == 1:
+            raise RuntimeError("backend down")
+        stop.set()
+        return True
+
+    with patch(f"{CONSUMER}.catalog_is_empty", return_value=True), patch(
+        f"{CONSUMER}.run_full_refresh", side_effect=refresh
+    ), patch(f"{CONSUMER}._REFRESH_RETRY_SECONDS", 0.01):
+        await asyncio.wait_for(run_recommendation_full_refresh_loop(stop), timeout=5)
+
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio

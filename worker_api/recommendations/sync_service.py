@@ -5,7 +5,7 @@ current in between; this catches whatever they missed: a lost message,
 a join through a path that sends no event, an unpublished space."""
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from worker_api.config import get_int
 from worker_api.db.database import SessionLocal
 from worker_api.recommendations.backend_client import fetch_catalog_page, fetch_memberships_page
-from worker_api.recommendations.models import RecItem, RecMembership
+from worker_api.recommendations.models import RecItem, RecMembership, RecMembershipChange
 from worker_api.recommendations.schemas import (
     ITEM_PLAN,
     ITEM_SPACE,
@@ -23,8 +23,14 @@ from worker_api.recommendations.schemas import (
     CatalogItem,
     Membership,
 )
+from worker_api.recommendations.signal_service import lock_memberships, record_membership_change
 
 logger = logging.getLogger(__name__)
+
+# Event times come from the backend's clock and snapshot times from ours, so
+# a membership changed by an event shortly before the snapshot also keeps
+# the event's state. Either is correct for such a recent change.
+_CLOCK_SKEW = timedelta(minutes=5)
 
 
 async def _fetch_catalog(item_type: str, page_size: int) -> List[CatalogItem]:
@@ -77,9 +83,15 @@ def replace_catalog(db: Session, item_type: str, items: Sequence[CatalogItem]) -
     return len(gone)
 
 
-def replace_memberships(db: Session, item_type: str, memberships: Sequence[Membership]) -> Tuple[int, int]:
-    """Make rec_memberships for ``item_type`` exactly ``memberships``.
+def replace_memberships(
+    db: Session, item_type: str, memberships: Sequence[Membership], snapshot_at: datetime
+) -> Tuple[int, int]:
+    """Make rec_memberships for ``item_type`` match ``memberships``, a
+    snapshot whose fetch began at ``snapshot_at``. Memberships an event
+    changed since then keep the event's state, and every change made here is
+    recorded at ``snapshot_at`` so an older event cannot undo it.
     Returns (added, removed)."""
+    lock_memberships(db)
     existing = {
         (user_id, item_id)
         for user_id, item_id in db.execute(
@@ -88,41 +100,53 @@ def replace_memberships(db: Session, item_type: str, memberships: Sequence[Membe
             )
         )
     }
-    incoming = {(m.user_id, m.item_id): m for m in memberships}
-    now = datetime.now(timezone.utc)
-    added = 0
-    for key, membership in incoming.items():
-        if key in existing:
-            continue
-        db.add(
-            RecMembership(
-                user_id=membership.user_id,
-                item_type=item_type,
-                item_id=membership.item_id,
-                joined_at=membership.joined_at or now,
+    newer = {
+        (user_id, item_id)
+        for user_id, item_id in db.execute(
+            select(RecMembershipChange.user_id, RecMembershipChange.item_id).where(
+                RecMembershipChange.item_type == item_type,
+                RecMembershipChange.changed_at >= snapshot_at - _CLOCK_SKEW,
             )
         )
+    }
+    incoming = {(m.user_id, m.item_id): m for m in memberships}
+
+    added = 0
+    for key, membership in incoming.items():
+        if key in existing or key in newer:
+            continue
+        record_membership_change(
+            db,
+            _membership_key(item_type, key),
+            present=True,
+            changed_at=snapshot_at,
+            joined_at=membership.joined_at,
+        )
         added += 1
-    removed = [key for key in existing if key not in incoming]
-    for user_id, item_id in removed:
-        db.execute(
-            delete(RecMembership).where(
-                RecMembership.user_id == user_id,
-                RecMembership.item_type == item_type,
-                RecMembership.item_id == item_id,
-            )
+    removed = [key for key in existing if key not in incoming and key not in newer]
+    for key in removed:
+        record_membership_change(
+            db, _membership_key(item_type, key), present=False, changed_at=snapshot_at
         )
     db.commit()
     return added, len(removed)
 
 
-def _apply_sync(catalogs: Dict[str, List[CatalogItem]], memberships: Dict[str, List[Membership]]) -> None:
+def _membership_key(item_type: str, key: Tuple[UUID, UUID]) -> dict:
+    user_id, item_id = key
+    return {"user_id": user_id, "item_type": item_type, "item_id": item_id}
+
+
+def _apply_sync(
+    catalogs: Dict[str, List[CatalogItem]],
+    memberships: Dict[str, Tuple[datetime, List[Membership]]],
+) -> None:
     with SessionLocal() as db:
         for item_type, items in catalogs.items():
             gone = replace_catalog(db, item_type, items)
             logger.info("Synced %s %s item(s), dropped %s", len(items), item_type, gone)
-        for item_type, rows in memberships.items():
-            added, removed = replace_memberships(db, item_type, rows)
+        for item_type, (snapshot_at, rows) in memberships.items():
+            added, removed = replace_memberships(db, item_type, rows, snapshot_at)
             logger.info(
                 "Synced %s %s membership(s): +%s -%s", len(rows), item_type, added, removed
             )
@@ -136,10 +160,10 @@ async def full_resync() -> None:
         item_type: await _fetch_catalog(item_type, page_size)
         for item_type in (ITEM_SPACE, ITEM_PLAN)
     }
-    memberships = {
-        item_type: await _fetch_memberships(item_type, page_size)
-        for item_type in (ITEM_SPACE, ITEM_PLAN, ITEM_TRADITION)
-    }
+    memberships = {}
+    for item_type in (ITEM_SPACE, ITEM_PLAN, ITEM_TRADITION):
+        snapshot_at = datetime.now(timezone.utc)
+        memberships[item_type] = (snapshot_at, await _fetch_memberships(item_type, page_size))
     await asyncio.to_thread(_apply_sync, catalogs, memberships)
 
 

@@ -5,7 +5,7 @@ by the rec_events queue. Nothing here is the source of truth: losing it costs
 one full refresh."""
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Uuid
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Uuid
 
 from worker_api.db.database import Base
 
@@ -28,6 +28,22 @@ class RecMembership(Base):
         Index("idx_rec_memberships_item", "item_type", "item_id"),
         Index("idx_rec_memberships_joined_at", "item_type", "joined_at"),
     )
+
+
+class RecMembershipChange(Base):
+    """When each membership last changed, and to what. Removals are kept too,
+    so a stale event or snapshot cannot undo a newer change, and a user who
+    left everything is still refreshed."""
+
+    __tablename__ = "rec_membership_changes"
+
+    user_id = Column(Uuid, primary_key=True)
+    item_type = Column(String(32), primary_key=True)
+    item_id = Column(Uuid, primary_key=True)
+    changed_at = Column(DateTime(timezone=True), nullable=False)
+    present = Column(Boolean, nullable=False)
+
+    __table_args__ = (Index("idx_rec_membership_changes_changed_at", "item_type", "changed_at"),)
 
 
 class RecItem(Base):
