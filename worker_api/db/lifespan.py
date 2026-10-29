@@ -22,6 +22,10 @@ from worker_api.notifications.services.prayer_notification_consumer import (
 from worker_api.prayer_translation.services.prayer_translation_consumer import (
     run_prayer_translation_sqs_consumer,
 )
+from worker_api.recommendations.consumer import (
+    run_recommendation_events_sqs_consumer,
+    run_recommendation_full_refresh_loop,
+)
 
 
 @asynccontextmanager
@@ -35,6 +39,8 @@ async def lifespan(api: FastAPI):
         asyncio.create_task(run_group_post_notification_sqs_consumer(stop_event)),
         asyncio.create_task(run_event_notification_sqs_consumer(stop_event)),
         asyncio.create_task(run_prayer_translation_sqs_consumer(stop_event)),
+        asyncio.create_task(run_recommendation_events_sqs_consumer(stop_event)),
+        asyncio.create_task(run_recommendation_full_refresh_loop(stop_event)),
     ]
 
     yield
