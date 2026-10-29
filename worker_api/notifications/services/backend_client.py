@@ -14,6 +14,7 @@ from worker_api.notifications.schemas import (
     JoinRequestNotificationTargetsResponse,
     NotificationContent,
     RoutineNotificationTargetsResponse,
+    VerseOfDayCommentNotificationTargetsResponse,
     VerseOfDayNotificationTargetsResponse,
 )
 
@@ -113,6 +114,22 @@ async def fetch_verse_of_day_notification_targets() -> VerseOfDayNotificationTar
         )
         response.raise_for_status()
         return VerseOfDayNotificationTargetsResponse.model_validate(response.json())
+
+
+async def fetch_verse_of_day_comment_notification_targets(
+    *,
+    window_id: UUID,
+    skip: int = 0,
+    limit: int = 100,
+) -> VerseOfDayCommentNotificationTargetsResponse:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{_backend_url()}/internal/verse-of-day-comment-windows/{window_id}/notification-targets",
+            params={"skip": skip, "limit": limit},
+            headers=_backend_headers(),
+        )
+        response.raise_for_status()
+        return VerseOfDayCommentNotificationTargetsResponse.model_validate(response.json())
 
 
 async def fetch_group_post_notification_targets(

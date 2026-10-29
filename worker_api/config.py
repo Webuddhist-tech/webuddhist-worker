@@ -5,8 +5,6 @@ import re
 
 DEFAULTS = dict(
     DATABASE_URL="postgresql://admin:pechaAdmin@localhost:5434/pecha-worker",
-    MONGO_CONNECTION_STRING="mongodb://admin:pechaAdmin@localhost:27017/pecha?authSource=admin",
-    MONGO_DATABASE_NAME="webuddhist",
 
     AWS_ACCESS_KEY="",
     AWS_SECRET_KEY="",
@@ -66,6 +64,15 @@ DEFAULTS = dict(
     AUDIO_SQS_MAX_MESSAGES=1,
     AUDIO_SQS_POLL_ENABLED="true",
 
+    # Prayer request translation SQS consumer (backend producer → worker consumer)
+    PRAYER_TRANSLATION_ENABLED="true",
+    GEMINI_PRAYER_TRANSLATION_MODEL="gemini-3.8-flash",
+    PRAYER_TRANSLATION_SQS_QUEUE_URL="",
+    PRAYER_TRANSLATION_SQS_WAIT_TIME_SECONDS=20,
+    PRAYER_TRANSLATION_SQS_VISIBILITY_TIMEOUT_SECONDS=300,
+    PRAYER_TRANSLATION_SQS_MAX_MESSAGES=5,
+    PRAYER_TRANSLATION_SQS_POLL_ENABLED="true",
+
     # Chat notification SQS consumer (backend producer → worker consumer)
     CHAT_NOTIFICATION_SQS_QUEUE_URL="",
     CHAT_NOTIFICATION_SQS_WAIT_TIME_SECONDS=20,
@@ -90,6 +97,11 @@ DEFAULTS = dict(
     PRAYER_NOTIFICATION_TARGET_PAGE_SIZE=100,
     PRAYER_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS=86400,
     PRAYER_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX="worker:prayer-notifications:sent:",
+    # Verse-of-the-day comment pushes arrive on the chat queue.
+    VERSE_OF_DAY_COMMENT_NOTIFICATION_SEND_CONCURRENCY=10,
+    VERSE_OF_DAY_COMMENT_NOTIFICATION_TARGET_PAGE_SIZE=200,
+    VERSE_OF_DAY_COMMENT_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS=86400,
+    VERSE_OF_DAY_COMMENT_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX="worker:verse-comment-notifications:sent:",
 
     # Join request notification SQS consumer (backend producer → worker consumer)
     JOIN_REQUEST_NOTIFICATION_SQS_QUEUE_URL="",
@@ -101,6 +113,37 @@ DEFAULTS = dict(
     JOIN_REQUEST_NOTIFICATION_TARGET_PAGE_SIZE=100,
     JOIN_REQUEST_NOTIFICATION_IDEMPOTENCY_TTL_SECONDS=86400,
     JOIN_REQUEST_NOTIFICATION_IDEMPOTENCY_KEY_PREFIX="worker:join-request-notifications:sent:",
+
+    # Recommendation events SQS consumer (backend producer → worker consumer).
+    # The worker keeps its own copy of the signals and scores, and sends each
+    # user's ranked suggestions back to the backend.
+    RECOMMENDATION_EVENTS_SQS_QUEUE_URL="",
+    RECOMMENDATION_EVENTS_SQS_WAIT_TIME_SECONDS=20,
+    RECOMMENDATION_EVENTS_SQS_VISIBILITY_TIMEOUT_SECONDS=300,
+    RECOMMENDATION_EVENTS_SQS_MAX_MESSAGES=10,
+    RECOMMENDATION_EVENTS_SQS_POLL_ENABLED="true",
+    # Full rebuild from the backend, then a rescore of every user.
+    RECOMMENDATION_FULL_REFRESH_ENABLED="true",
+    RECOMMENDATION_FULL_REFRESH_INTERVAL_SECONDS=86400,
+    RECOMMENDATION_FULL_REFRESH_LOCK_KEY="worker:recommendations:full-refresh-lock",
+    RECOMMENDATION_FULL_REFRESH_LOCK_TTL_SECONDS=7200,
+    RECOMMENDATION_SYNC_PAGE_SIZE=1000,
+    RECOMMENDATION_PUSH_CONCURRENCY=8,
+    RECOMMENDATION_MODEL_NAME="rules-v1",
+    RECOMMENDATION_MAX_PER_TYPE=30,
+    RECOMMENDATION_TRENDING_WINDOW_DAYS=7,
+    RECOMMENDATION_NEW_WINDOW_DAYS=14,
+    # Impressions a suggestion may get without a tap before it is pushed down.
+    RECOMMENDATION_IGNORED_IMPRESSIONS_FREE=3,
+    # rules-v1 weights. Tune from join rate; see recommendations/scoring.py.
+    RECOMMENDATION_WEIGHT_CO_MEMBERS=3.0,
+    RECOMMENDATION_WEIGHT_TRADITION=2.5,
+    RECOMMENDATION_WEIGHT_FROM_JOINED_SPACE=2.5,
+    RECOMMENDATION_WEIGHT_TAG_AFFINITY=2.0,
+    RECOMMENDATION_WEIGHT_TRENDING=1.5,
+    RECOMMENDATION_WEIGHT_POPULARITY=0.5,
+    RECOMMENDATION_WEIGHT_NEW=1.0,
+    RECOMMENDATION_WEIGHT_IGNORED=0.5,
 
     # Group post notification SQS consumer (backend producer → worker consumer)
     GROUP_POST_NOTIFICATION_SQS_QUEUE_URL="",

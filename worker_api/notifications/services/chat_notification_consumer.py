@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from worker_api.config import get, get_bool, get_int
 from worker_api.notifications.chat_sqs_client import (
     PRAYER_RECEIVED_EVENT,
+    VERSE_OF_DAY_COMMENTS_EVENT,
     delete_chat_notification_message,
     is_chat_notification_sqs_poll_enabled,
     parse_chat_notification_message_body,
@@ -31,6 +32,10 @@ from worker_api.notifications.services.push.fcm_client import (
 from worker_api.notifications.services.prayer_notification_service import (
     TransientPrayerNotificationError,
     process_prayer_event,
+)
+from worker_api.notifications.services.verse_of_day_comment_notification_service import (
+    TransientVerseCommentNotificationError,
+    process_verse_of_day_comments_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,8 +117,11 @@ async def _send_to_device(
     targets: ChatNotificationTargetsResponse,
     device: ChatPushDeviceTarget,
     semaphore: asyncio.Semaphore,
+    title: str | None = None,
+    body: str | None = None,
 ) -> str:
-    """Return sent | skipped | permanent_failed | transient_failed."""
+    """Return sent | skipped | permanent_failed | transient_failed. `title` and
+    `body` are the recipient's own copy when the backend sent one."""
     async with semaphore:
         if not is_push_configured(device.platform):
             return "skipped"
@@ -129,8 +137,8 @@ async def _send_to_device(
                 sender_id=targets.sender_id,
                 chat_kind=targets.chat_kind,
                 group_id=targets.group_id,
-                title=targets.title,
-                body=targets.body,
+                title=title or targets.title,
+                body=body or targets.body,
                 message_type=targets.message_type,
                 image_url=targets.image_url,
             )
@@ -185,6 +193,17 @@ async def process_chat_notification_message(message: Dict[str, Any]) -> None:
             raise TransientChatNotificationError(str(exc)) from exc
         return
 
+    if body.get("event_type") == VERSE_OF_DAY_COMMENTS_EVENT:
+        try:
+            await process_verse_of_day_comments_event(
+                body=body,
+                receipt_handle=receipt_handle,
+                delete_message=delete_chat_notification_message,
+            )
+        except TransientVerseCommentNotificationError as exc:
+            raise TransientChatNotificationError(str(exc)) from exc
+        return
+
     await process_chat_message_event(
         body=body,
         receipt_handle=receipt_handle,
@@ -217,8 +236,9 @@ async def process_chat_message_event(
             return
         raise TransientChatNotificationError(str(exc.detail)) from exc
 
+    # Each device goes with its recipient, whose copy may be in their language.
     devices = [
-        device
+        (recipient, device)
         for recipient in targets.recipients
         for device in recipient.push_devices
     ]
@@ -232,8 +252,14 @@ async def process_chat_message_event(
     semaphore = asyncio.Semaphore(concurrency)
     results = await asyncio.gather(
         *[
-            _send_to_device(targets=targets, device=device, semaphore=semaphore)
-            for device in devices
+            _send_to_device(
+                targets=targets,
+                device=device,
+                semaphore=semaphore,
+                title=recipient.title,
+                body=recipient.body,
+            )
+            for recipient, device in devices
         ]
     )
 

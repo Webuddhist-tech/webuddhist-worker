@@ -319,3 +319,42 @@ class TestRunChatNotificationSqsConsumer:
             stop_event.set()
             release_slow.set()
             await asyncio.wait_for(runner, timeout=2)
+
+
+@pytest.mark.asyncio
+@patch("worker_api.notifications.services.chat_notification_consumer.delete_chat_notification_message")
+@patch(
+    "worker_api.notifications.services.chat_notification_consumer.send_chat_push_notification",
+    new_callable=AsyncMock,
+)
+@patch(
+    "worker_api.notifications.services.chat_notification_consumer._fetch_all_targets",
+    new_callable=AsyncMock,
+)
+@patch("worker_api.notifications.services.chat_notification_consumer.is_push_configured", return_value=True)
+@patch("worker_api.notifications.services.chat_notification_consumer._already_sent", return_value=False)
+@patch("worker_api.notifications.services.chat_notification_consumer._mark_sent")
+@patch("worker_api.notifications.services.chat_notification_consumer.get_int", return_value=5)
+@patch("worker_api.notifications.services.chat_notification_consumer.get_bool", return_value=True)
+async def test_each_recipient_gets_their_own_copy_when_the_backend_sends_one(
+    _get_bool, _get_int, _mark, _already, _configured, mock_fetch, mock_send, _delete
+):
+    message_id = uuid4()
+    tibetan = ChatPushDeviceTarget(id=uuid4(), token="bo-device", platform="android")
+    other = ChatPushDeviceTarget(id=uuid4(), token="en-device", platform="ios")
+    targets = _targets(message_id=message_id, devices=[other])
+    targets.recipients.insert(
+        0,
+        ChatNotificationRecipient(
+            user_id=uuid4(), push_devices=[tibetan], title="Pema · སྨོན་ལམ། 🙏", body="ཨ་མ་ལ།"
+        ),
+    )
+    mock_fetch.return_value = targets
+
+    await process_chat_notification_message(
+        {"ReceiptHandle": "r1", "Body": json.dumps({"event_type": "CHAT_MESSAGE_CREATED", "version": 1, "message_id": str(message_id)})}
+    )
+
+    sent = {call.kwargs["device_token"]: (call.kwargs["title"], call.kwargs["body"]) for call in mock_send.await_args_list}
+    # The recipient without its own copy gets the shared one, as before.
+    assert sent == {"bo-device": ("Pema · སྨོན་ལམ། 🙏", "ཨ་མ་ལ།"), "en-device": ("Alice", "Hello")}

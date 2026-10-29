@@ -1,0 +1,61 @@
+# AI code review on every push to a PR branch.
+# Each push gets a new PR review: the score and summary on top, the new
+# findings (each with a fix prompt) as inline comments below it. Findings that
+# were fixed, or whose thread was resolved by hand, are closed, and older
+# summaries collapse to a link to the latest. Re-running a job reviews the
+# branch's current head, not the commit that originally triggered it.
+#
+# Setup:  Settings → Secrets → Actions → add ANTHROPIC_API_KEY
+# Tuning: Settings → Variables → Actions (optional)
+#   AI_REVIEW_MODEL   default claude-sonnet-5-5 (claude-opus-5-5 deeper, claude-haiku-5-5 cheaper)
+#   AI_REVIEW_EFFORT  default medium (low | medium | high)
+#   AI_REVIEW_ON_FIXED  resolve (default: mark ✅ + resolve thread) | delete
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip drafts and fork PRs (forks get no secrets).
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Branch tip, so re-runs pick up the latest push (forks are skipped above).
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install reviewer deps
+        run: npm install --no-audit --no-fund --prefix .github/ai-review
+
+      - name: Run AI review
+        run: node .github/ai-review/review.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'claude-sonnet-5-5' }}
+          AI_REVIEW_EFFORT: ${{ vars.AI_REVIEW_EFFORT || 'medium' }}
+          AI_REVIEW_ON_FIXED: ${{ vars.AI_REVIEW_ON_FIXED || 'resolve' }}

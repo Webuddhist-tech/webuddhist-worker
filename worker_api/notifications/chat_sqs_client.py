@@ -13,6 +13,8 @@ _sqs_client = None
 
 CHAT_MESSAGE_CREATED_EVENT = "CHAT_MESSAGE_CREATED"
 PRAYER_RECEIVED_EVENT = "PRAYER_RECEIVED"
+# Comments on the verse of the day, debounced into windows by the backend.
+VERSE_OF_DAY_COMMENTS_EVENT = "VERSE_OF_DAY_COMMENTS"
 CHAT_NOTIFICATION_EVENT_VERSION = 1
 
 
@@ -86,15 +88,21 @@ def parse_chat_notification_message_body(raw_body: str) -> Optional[Dict[str, An
 
     event_type = body.get("event_type")
     version = body.get("version")
-    if event_type not in (CHAT_MESSAGE_CREATED_EVENT, PRAYER_RECEIVED_EVENT):
+    if event_type not in (CHAT_MESSAGE_CREATED_EVENT, PRAYER_RECEIVED_EVENT, VERSE_OF_DAY_COMMENTS_EVENT):
         logger.error("Unsupported chat notification event_type: %s", event_type)
         return None
     if version != CHAT_NOTIFICATION_EVENT_VERSION:
         logger.error("Unsupported chat notification event version: %s", version)
         return None
 
-    # The two events are keyed differently: a chat message by message_id, a
-    # prayer by the prayer_id of the one person who prayed.
+    # The events are keyed differently: a chat message by message_id, a
+    # prayer by the prayer_id of the one person who prayed, verse comments by
+    # the window they were debounced into.
+    if event_type == VERSE_OF_DAY_COMMENTS_EVENT:
+        if not body.get("window_id"):
+            logger.error("Verse comment notification SQS message missing window_id: %s", body)
+            return None
+        return body
     if event_type == PRAYER_RECEIVED_EVENT:
         if not body.get("prayer_id"):
             logger.error("Prayer notification SQS message missing prayer_id: %s", body)

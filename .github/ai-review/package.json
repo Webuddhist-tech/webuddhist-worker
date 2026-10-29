@@ -1,0 +1,8 @@
+{
+  "name": "ai-review",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.133.0"
+  }
+}

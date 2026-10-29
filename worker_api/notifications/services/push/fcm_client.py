@@ -207,6 +207,46 @@ async def send_verse_of_day_push_notification(
     )
 
 
+def build_verse_of_day_comment_notification_data(
+    *,
+    verse_id: UUID,
+    title: str,
+    body: str,
+    image_url: str | None = None,
+) -> dict[str, str]:
+    """FCM data payloads require string values. session_type stays
+    VERSE_OF_DAY, so an app that does not know these pushes still opens the
+    verse; screen and verse_id let a newer one go straight to its comments."""
+    return {
+        "notification_type": "VERSE_OF_DAY_COMMENT",
+        "session_type": "VERSE_OF_DAY",
+        "screen": "comments",
+        "verse_id": str(verse_id),
+        "title": title,
+        "body": body,
+        "image_url": image_url or "",
+    }
+
+
+async def send_verse_of_day_comment_push_notification(
+    *,
+    device_token: str,
+    verse_id: UUID,
+    title: str,
+    body: str,
+    image_url: str | None = None,
+) -> None:
+    await send_fcm_notification(
+        device_token=device_token,
+        title=title,
+        body=body,
+        image_url=image_url,
+        data=build_verse_of_day_comment_notification_data(
+            verse_id=verse_id, title=title, body=body, image_url=image_url
+        ),
+    )
+
+
 async def send_chat_push_notification(
     *,
     device_token: str,
